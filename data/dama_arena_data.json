@@ -1,0 +1,155 @@
+{
+  "users": {
+    "guest_dama_king": {
+      "id": "guest_dama_king",
+      "username": "Abebe_Bikila",
+      "displayName": "Abebe B. (Dama Master)",
+      "avatarSeed": "Abebe",
+      "elo": 1850,
+      "matchesPlayed": 48,
+      "wins": 39,
+      "losses": 7,
+      "draws": 2,
+      "winStreak": 6,
+      "bestStreak": 12,
+      "level": 14,
+      "xp": 4200,
+      "createdAt": 1790766462739,
+      "badges": [
+        "Grandmaster",
+        "10-Streak",
+        "Tactician",
+        "Dama Pioneer"
+      ]
+    },
+    "guest_haile_g": {
+      "id": "guest_haile_g",
+      "username": "Haile_G",
+      "displayName": "Haile Gebrselassie",
+      "avatarSeed": "Haile",
+      "elo": 1720,
+      "matchesPlayed": 32,
+      "wins": 24,
+      "losses": 6,
+      "draws": 2,
+      "winStreak": 3,
+      "bestStreak": 8,
+      "level": 10,
+      "xp": 2850,
+      "createdAt": 1791630462739,
+      "badges": [
+        "Endurance",
+        "Sharpshooter"
+      ]
+    },
+    "guest_selam_t": {
+      "id": "guest_selam_t",
+      "username": "Selam_T",
+      "displayName": "Selamawit T.",
+      "avatarSeed": "Selam",
+      "elo": 1640,
+      "matchesPlayed": 25,
+      "wins": 18,
+      "losses": 5,
+      "draws": 2,
+      "winStreak": 4,
+      "bestStreak": 7,
+      "level": 8,
+      "xp": 2100,
+      "createdAt": 1792062462739,
+      "badges": [
+        "Rising Star",
+        "Strategist"
+      ]
+    },
+    "guest_1793358473049_24": {
+      "id": "guest_1793358473049_24",
+      "username": "player_7475",
+      "displayName": "Player_7475",
+      "avatarSeed": "Player_7475",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793358473049,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793363242077_718": {
+      "id": "guest_1793363242077_718",
+      "username": "player_6708",
+      "displayName": "Player_6708",
+      "avatarSeed": "Player_6708",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793363242077,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793363540819_419": {
+      "id": "guest_1793363540819_419",
+      "username": "player_5322",
+      "displayName": "Player_5322",
+      "avatarSeed": "Player_5322",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793363540819,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793363545499_570": {
+      "id": "guest_1793363545499_570",
+      "username": "player_3337",
+      "displayName": "Player_3337",
+      "avatarSeed": "Player_3337",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793363545499,
+      "badges": [
+        "Recruit"
+      ]
+    }
+  },
+  "matches": [
+    {
+      "id": "match_1793363745579_823",
+      "mode": "ai",
+      "whitePlayer": "Player_1150",
+      "blackPlayer": "AI (medium)",
+      "winner": "white",
+      "reason": "All black pieces captured!",
+      "totalTurns": 15,
+      "playedAt": 1793363745579,
+      "difficulty": "medium"
+    }
+  ]
+}

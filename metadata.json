@@ -1,0 +1,8 @@
+{
+  "name": "Dama Arena",
+  "description": "Ethiopian Dama gaming platform featuring tactical AI, online multiplayer, friend match rooms, and Telegram Mini App integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
