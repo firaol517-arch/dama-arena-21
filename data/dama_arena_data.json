@@ -137,6 +137,82 @@
       "badges": [
         "Recruit"
       ]
+    },
+    "tg_5221902683": {
+      "id": "tg_5221902683",
+      "username": "",
+      "displayName": "ኢታይ ☼",
+      "avatarSeed": "ኢታይ ☼",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793368747264,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793530954064_902": {
+      "id": "guest_1793530954064_902",
+      "username": "player_2852",
+      "displayName": "Player_2852",
+      "avatarSeed": "Player_2852",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793530954064,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793358731035_944": {
+      "id": "guest_1793358731035_944",
+      "username": "player_1150",
+      "displayName": "Player_1150",
+      "avatarSeed": "Player_1150",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793621897772,
+      "badges": [
+        "Recruit"
+      ]
+    },
+    "guest_1793621939093_607": {
+      "id": "guest_1793621939093_607",
+      "username": "player_1756",
+      "displayName": "Player_1756",
+      "avatarSeed": "Player_1756",
+      "elo": 1200,
+      "matchesPlayed": 0,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "winStreak": 0,
+      "bestStreak": 0,
+      "level": 1,
+      "xp": 0,
+      "createdAt": 1793621939093,
+      "badges": [
+        "Recruit"
+      ]
     }
   },
   "matches": [
@@ -150,6 +226,299 @@
       "totalTurns": 15,
       "playedAt": 1793363745579,
       "difficulty": "medium"
+    },
+    {
+      "id": "match_1793368950285_158",
+      "mode": "ai",
+      "whitePlayer": "Player_1150",
+      "blackPlayer": "AI (medium)",
+      "winner": "white",
+      "reason": "All black pieces captured!",
+      "totalTurns": 15,
+      "playedAt": 1793368950285,
+      "difficulty": "medium"
+    }
+  ],
+  "tournaments": [
+    {
+      "id": "tourn_addis_gp_2026",
+      "title": "የአዲስ አበባ ግራንድ ፕሪክስ (Addis Ababa Grand Prix)",
+      "description": "የ 8 ምርጥ ተጫዋቾች ባለ 4 (8x8) የዳማ የጥሎ ማለፍ ውድድር። አሸናፊው 5,000 ብር እና 500 Dama Gems ይሸለማል!",
+      "organizer": {
+        "id": "org_ethiodama",
+        "name": "የኢትዮጵያ ዳማ ፌዴሬሽን",
+        "avatarSeed": "Federation",
+        "role": "ዋና አዘጋጅ / Organizer"
+      },
+      "maxPlayers": 8,
+      "boardSize": 8,
+      "prizeXp": 5000,
+      "status": "registering",
+      "registeredPlayers": [
+        {
+          "id": "guest_dama_king",
+          "name": "Abebe B. (Dama Master)",
+          "elo": 1850,
+          "wins": 39,
+          "points": 12,
+          "avatarSeed": "Abebe"
+        },
+        {
+          "id": "guest_haile_g",
+          "name": "Haile Gebrselassie",
+          "elo": 1720,
+          "wins": 24,
+          "points": 9,
+          "avatarSeed": "Haile"
+        },
+        {
+          "id": "guest_selam_t",
+          "name": "Selamawit T.",
+          "elo": 1640,
+          "wins": 18,
+          "points": 6,
+          "avatarSeed": "Selam"
+        },
+        {
+          "id": "guest_dawit_k",
+          "name": "Dawit Kebede",
+          "elo": 1580,
+          "wins": 15,
+          "points": 4,
+          "avatarSeed": "Dawit"
+        },
+        {
+          "id": "guest_almaz_a",
+          "name": "Almaz Ayana",
+          "elo": 1610,
+          "wins": 17,
+          "points": 5,
+          "avatarSeed": "Almaz"
+        }
+      ],
+      "matches": [
+        {
+          "id": "match_qf_1",
+          "round": 1,
+          "roundName": "ሩብ ፍጻሜ 1 (Quarterfinal 1)",
+          "player1": {
+            "id": "guest_dama_king",
+            "name": "Abebe B.",
+            "elo": 1850
+          },
+          "player2": {
+            "id": "guest_dawit_k",
+            "name": "Dawit K.",
+            "elo": 1580
+          },
+          "status": "upcoming"
+        },
+        {
+          "id": "match_qf_2",
+          "round": 1,
+          "roundName": "ሩብ ፍጻሜ 2 (Quarterfinal 2)",
+          "player1": {
+            "id": "guest_haile_g",
+            "name": "Haile G.",
+            "elo": 1720
+          },
+          "player2": {
+            "id": "guest_almaz_a",
+            "name": "Almaz A.",
+            "elo": 1610
+          },
+          "status": "upcoming"
+        },
+        {
+          "id": "match_qf_3",
+          "round": 1,
+          "roundName": "ሩብ ፍጻሜ 3 (Quarterfinal 3)",
+          "player1": {
+            "id": "guest_selam_t",
+            "name": "Selamawit T.",
+            "elo": 1640
+          },
+          "status": "upcoming"
+        },
+        {
+          "id": "match_qf_4",
+          "round": 1,
+          "roundName": "ሩብ ፍጻሜ 4 (Quarterfinal 4)",
+          "status": "upcoming"
+        }
+      ],
+      "createdAt": 1793523704031
+    },
+    {
+      "id": "tourn_championship_2026",
+      "title": "የኢትዮጵያ ዳማ ብሔራዊ ሻምፒዮና (National Championship)",
+      "description": "የ 16 ተጫዋቾች ታላቅ የዳማ ዋንጫ ውድድር። አሸናፊው 10,000 ብር እና የክብር ወርቅ ዋንጫ ይቀበላል!",
+      "organizer": {
+        "id": "org_championship",
+        "name": "Dama Arena Premier",
+        "avatarSeed": "DamaArena",
+        "role": "አስተባባሪ / Coordinator"
+      },
+      "maxPlayers": 16,
+      "boardSize": 8,
+      "prizeXp": 10000,
+      "status": "registering",
+      "registeredPlayers": [
+        {
+          "id": "guest_dama_king",
+          "name": "Abebe B. (Dama Master)",
+          "elo": 1850,
+          "wins": 39,
+          "points": 15,
+          "avatarSeed": "Abebe"
+        },
+        {
+          "id": "guest_haile_g",
+          "name": "Haile Gebrselassie",
+          "elo": 1720,
+          "wins": 24,
+          "points": 12,
+          "avatarSeed": "Haile"
+        },
+        {
+          "id": "guest_selam_t",
+          "name": "Selamawit T.",
+          "elo": 1640,
+          "wins": 18,
+          "points": 10,
+          "avatarSeed": "Selam"
+        },
+        {
+          "id": "p_yared",
+          "name": "Yared Tadesse",
+          "elo": 1590,
+          "wins": 14,
+          "points": 7,
+          "avatarSeed": "Yared"
+        },
+        {
+          "id": "p_solomon",
+          "name": "Solomon Bogale",
+          "elo": 1670,
+          "wins": 21,
+          "points": 11,
+          "avatarSeed": "Solomon"
+        },
+        {
+          "id": "p_aster",
+          "name": "Aster Aweke",
+          "elo": 1530,
+          "wins": 11,
+          "points": 5,
+          "avatarSeed": "Aster"
+        },
+        {
+          "id": "p_bereket",
+          "name": "Bereket Mengistu",
+          "elo": 1600,
+          "wins": 16,
+          "points": 8,
+          "avatarSeed": "Bereket"
+        }
+      ],
+      "matches": [],
+      "createdAt": 1793444504031
+    },
+    {
+      "id": "tourn_blitz_cup_daily",
+      "title": "የሳምንቱ ፈጣን ዋንጫ (Weekly Blitz Cup)",
+      "description": "የ 4 ተጫዋቾች ፈጣን የግማሽ ፍጻሜ እና የፍጻሜ ግጥሚያ። የሽልማት ፈንድ 2,500 ብር!",
+      "organizer": {
+        "id": "org_blitz",
+        "name": "Blitz League Addis",
+        "avatarSeed": "Blitz",
+        "role": "ውድድር መሪ / Blitz Host"
+      },
+      "maxPlayers": 4,
+      "boardSize": 8,
+      "prizeXp": 2500,
+      "status": "live",
+      "registeredPlayers": [
+        {
+          "id": "guest_dama_king",
+          "name": "Abebe B.",
+          "elo": 1850,
+          "wins": 39,
+          "points": 6,
+          "avatarSeed": "Abebe"
+        },
+        {
+          "id": "guest_haile_g",
+          "name": "Haile G.",
+          "elo": 1720,
+          "wins": 24,
+          "points": 6,
+          "avatarSeed": "Haile"
+        },
+        {
+          "id": "guest_selam_t",
+          "name": "Selamawit T.",
+          "elo": 1640,
+          "wins": 18,
+          "points": 3,
+          "avatarSeed": "Selam"
+        },
+        {
+          "id": "guest_dawit_k",
+          "name": "Dawit K.",
+          "elo": 1580,
+          "wins": 15,
+          "points": 3,
+          "avatarSeed": "Dawit"
+        }
+      ],
+      "matches": [
+        {
+          "id": "blitz_sf_1",
+          "round": 1,
+          "roundName": "ግማሽ ፍጻሜ 1 (Semifinal 1)",
+          "player1": {
+            "id": "guest_dama_king",
+            "name": "Abebe B.",
+            "elo": 1850
+          },
+          "player2": {
+            "id": "guest_dawit_k",
+            "name": "Dawit K.",
+            "elo": 1580
+          },
+          "winnerId": "guest_dama_king",
+          "status": "finished"
+        },
+        {
+          "id": "blitz_sf_2",
+          "round": 1,
+          "roundName": "ግማሽ ፍጻሜ 2 (Semifinal 2)",
+          "player1": {
+            "id": "guest_haile_g",
+            "name": "Haile G.",
+            "elo": 1720
+          },
+          "player2": {
+            "id": "guest_selam_t",
+            "name": "Selamawit T.",
+            "elo": 1640
+          },
+          "status": "ongoing"
+        },
+        {
+          "id": "blitz_final",
+          "round": 2,
+          "roundName": "ዋንጫ ፍጻሜ (Grand Final)",
+          "player1": {
+            "id": "guest_dama_king",
+            "name": "Abebe B.",
+            "elo": 1850
+          },
+          "status": "upcoming"
+        }
+      ],
+      "createdAt": 1793529104031
     }
   ]
 }

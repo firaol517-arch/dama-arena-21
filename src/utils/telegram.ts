@@ -62,7 +62,18 @@ export function getTelegramStartParam(): string | null {
   // Fallback to URL query parameter
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search);
-    return params.get('tgWebAppStartParam') || params.get('room') || null;
+    return params.get('tgWebAppStartParam') || params.get('mode') || params.get('room') || null;
   }
   return null;
+}
+
+export function openTelegramExternalLink(url: string) {
+  if (typeof window === 'undefined') return;
+  const tg = getTelegramWebApp();
+  if (tg && typeof tg.openLink === 'function') {
+    tg.openLink(url);
+    return;
+  }
+  // Safe browser fallback: never set window.location.href to custom schemes!
+  window.open(url, '_blank', 'noopener,noreferrer');
 }

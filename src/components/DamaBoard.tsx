@@ -44,13 +44,15 @@ export const DamaBoard: React.FC<DamaBoardProps> = ({
 
   const hasMandatoryCapture = piecesWithCaptures.size > 0;
 
-  // Filter legal moves for currently selected piece
+  // Filter legal moves for currently selected piece or ongoing multi-capture piece
+  const effectivePos = activeCapturePiece || selectedPos;
+
   const selectedPieceMoves = useMemo(() => {
-    if (!selectedPos) return [];
+    if (!effectivePos) return [];
     return legalMoves.filter(
-      (m) => m.from.r === selectedPos.r && m.from.c === selectedPos.c
+      (m) => m.from.r === effectivePos.r && m.from.c === effectivePos.c
     );
-  }, [legalMoves, selectedPos]);
+  }, [legalMoves, effectivePos]);
 
   // Valid landing target positions from first step
   const validTargets = useMemo(() => {
@@ -79,18 +81,23 @@ export const DamaBoard: React.FC<DamaBoardProps> = ({
 
     const clickedPiece = board[r][c];
 
-    // If active capture sequence is ongoing, clicking anything except landing square is restricted
+    // If active capture sequence is ongoing
     if (activeCapturePiece) {
+      // Allow clicking the active piece itself to keep it selected
+      if (r === activeCapturePiece.r && c === activeCapturePiece.c) {
+        onSelectPiece(activeCapturePiece);
+        return;
+      }
       const target = validTargets.get(`${r},${c}`);
       if (target) {
-        onExecuteMove(selectedPos || activeCapturePiece, { r, c });
+        onExecuteMove(activeCapturePiece, { r, c });
       }
       return;
     }
 
     // If clicking a valid target square for selected piece
-    if (selectedPos && validTargets.has(`${r},${c}`)) {
-      onExecuteMove(selectedPos, { r, c });
+    if (effectivePos && validTargets.has(`${r},${c}`)) {
+      onExecuteMove(effectivePos, { r, c });
       return;
     }
 
@@ -112,7 +119,7 @@ export const DamaBoard: React.FC<DamaBoardProps> = ({
       {hasMandatoryCapture && (
         <div className="mb-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold flex items-center gap-1.5 shadow-md animate-pulse">
           <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-          <span>Capture is Mandatory! Select an illuminated piece.</span>
+          <span>⚠️ መብላት ግዴታ ነው! የሚያበራውን ጠጠር ይምረጡ | Capture is Mandatory!</span>
         </div>
       )}
 

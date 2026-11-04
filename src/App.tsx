@@ -15,6 +15,14 @@ import { LeaderboardModal } from './components/LeaderboardModal';
 import { RulesModal } from './components/RulesModal';
 import { SettingsModal } from './components/SettingsModal';
 import { GameOverModal } from './components/GameOverModal';
+import { TournamentModal } from './components/TournamentModal';
+import {
+  SpotifyPlayerModal,
+  SPOTIFY_PRESETS,
+  SpotifyTrackInfo,
+} from './components/SpotifyPlayerModal';
+import { InGameSpotifyDock } from './components/InGameSpotifyDock';
+import { Music } from 'lucide-react';
 
 import {
   createNewGame,
@@ -98,6 +106,9 @@ export default function App() {
   // Modals
   const [modeSelectOpen, setModeSelectOpen] = useState(false);
   const [friendRoomOpen, setFriendRoomOpen] = useState(false);
+  const [tournamentOpen, setTournamentOpen] = useState(false);
+  const [spotifyOpen, setSpotifyOpen] = useState(false);
+  const [currentSpotifyTrack, setCurrentSpotifyTrack] = useState<SpotifyTrackInfo | null>(SPOTIFY_PRESETS[0]);
   const [matchmakingOpen, setMatchmakingOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
@@ -164,14 +175,24 @@ export default function App() {
     // Check deep-linking parameter
     const startParam = getTelegramStartParam();
     if (startParam) {
-      if (startParam.startsWith('join_') || startParam.length === 6) {
+      if (startParam.startsWith('join_') || (startParam.length === 6 && !['leader', 'multi_'].includes(startParam.slice(0, 6)))) {
         const cleanCode = startParam.replace('join_', '').toUpperCase();
         setRoomId(cleanCode);
         setFriendRoomOpen(true);
       } else if (startParam === 'ai') {
         setModeSelectOpen(true);
+      } else if (startParam === 'friend') {
+        setFriendRoomOpen(true);
+      } else if (startParam === 'multiplayer') {
+        setMatchmakingOpen(true);
+      } else if (startParam === 'profile') {
+        setProfileOpen(true);
       } else if (startParam === 'rules') {
         setRulesOpen(true);
+      } else if (startParam === 'tournaments' || startParam === 'tournament') {
+        setTournamentOpen(true);
+      } else if (startParam === 'music' || startParam === 'spotify') {
+        setSpotifyOpen(true);
       } else if (startParam === 'leaderboard') {
         setLeaderboardOpen(true);
       }
@@ -280,6 +301,18 @@ export default function App() {
               setGameOverOpen(true);
             }
             break;
+
+          case 'SPOTIFY_UPDATED':
+            if (msg.spotifyUri) {
+              setCurrentSpotifyTrack({
+                title: msg.spotifyTitle || 'Shared Music',
+                category: `Shared by ${msg.sharedBy || 'Opponent'}`,
+                embedUrl: msg.spotifyUri,
+                spotifyUrl: msg.spotifyUri,
+                artist: msg.sharedBy || 'Opponent',
+              });
+            }
+            break;
         }
       } catch (err) {
         console.error('WebSocket receive error:', err);
@@ -294,6 +327,38 @@ export default function App() {
       socket.close();
     };
   }, [profile.id, profile.displayName]);
+
+  // Periodic state polling fallback for online rooms (bulletproof fallback on mobile networks)
+  useEffect(() => {
+    if (!roomId || (gameMode !== 'friend' && gameMode !== 'multiplayer')) return;
+
+    const pollInterval = setInterval(() => {
+      fetch(`/api/rooms/${roomId}/state`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.state) {
+            if (data.state.turnCount > gameState.turnCount || data.state.turn !== gameState.turn) {
+              setGameState(data.state);
+            }
+            if (data.hasOpponent && waitingForFriend) {
+              setWaitingForFriend(false);
+              setOpponentName(data.blackName || data.whiteName || 'Challenger');
+            }
+            if (data.spotifyUri && (!currentSpotifyTrack || currentSpotifyTrack.embedUrl !== data.spotifyUri)) {
+              setCurrentSpotifyTrack({
+                title: data.spotifyTitle || 'Room Track',
+                category: 'Shared in Room',
+                embedUrl: data.spotifyUri,
+                spotifyUrl: data.spotifyUri,
+              });
+            }
+          }
+        })
+        .catch(() => {});
+    }, 2500);
+
+    return () => clearInterval(pollInterval);
+  }, [roomId, gameMode, gameState.turnCount, gameState.turn, waitingForFriend, currentSpotifyTrack]);
 
   // Turn Timer Countdown
   useEffect(() => {
@@ -347,11 +412,26 @@ export default function App() {
     let active = true;
     setIsAiThinking(true);
 
-    getAiMoveAsync(gameState, aiDifficulty).then(({ move }) => {
-      if (!active) return;
-      setIsAiThinking(false);
+    getAiMoveAsync(gameState, aiDifficulty)
+      .then((res) => {
+        if (!active) return;
+        setIsAiThinking(false);
 
-      if (move) {
+        if (!res || !res.move) {
+          // AI has no moves, player wins by stalemate
+          const humanColor = playerColor;
+          const wonState: GameState = {
+            ...gameState,
+            status: humanColor === 'white' ? 'white_won' : 'black_won',
+            winner: humanColor,
+            statusReason: 'AI has no legal moves remaining. Victory by stalemate!',
+          };
+          setGameState(wonState);
+          handleGameEnd(wonState);
+          return;
+        }
+
+        const move = res.move;
         setHistoryStack((prev) => [...prev, gameState]);
         const next = applyMove(gameState, move);
         setGameState(next);
@@ -368,8 +448,12 @@ export default function App() {
         if (next.status !== 'playing') {
           handleGameEnd(next);
         }
-      }
-    });
+      })
+      .catch((err) => {
+        if (!active) return;
+        setIsAiThinking(false);
+        console.error('Safely recovered AI error:', err);
+      });
 
     return () => {
       active = false;
@@ -441,14 +525,23 @@ export default function App() {
         setSelectedPos(null);
 
         // If online multiplayer, synchronize authoritative move with server
-        if ((gameMode === 'friend' || gameMode === 'multiplayer') && wsRef.current) {
+        if (gameMode === 'friend' || gameMode === 'multiplayer') {
           const executedMove = nextState.moveHistory[nextState.moveHistory.length - 1];
-          wsRef.current.send(
-            JSON.stringify({
-              type: 'PLAY_MOVE',
-              move: executedMove,
-            })
-          );
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'PLAY_MOVE',
+                move: executedMove,
+              })
+            );
+          }
+          if (roomId) {
+            fetch(`/api/rooms/${roomId}/move`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ move: executedMove }),
+            }).catch(() => {});
+          }
         }
 
         if (nextState.status !== 'playing') {
@@ -536,6 +629,8 @@ export default function App() {
         soundEnabled={soundEnabled}
         onToggleSound={toggleSound}
         onOpenModeSelect={() => setModeSelectOpen(true)}
+        onOpenTournaments={() => setTournamentOpen(true)}
+        onOpenSpotify={() => setSpotifyOpen(true)}
         onOpenProfile={() => setProfileOpen(true)}
         onOpenLeaderboard={() => setLeaderboardOpen(true)}
         onOpenRules={() => setRulesOpen(true)}
@@ -543,6 +638,7 @@ export default function App() {
         isOnline={wsConnected}
         isTelegram={isTelegram}
         boardSize={gameState.config.boardSize}
+        currentMusicTitle={currentSpotifyTrack?.title}
       />
 
       {/* Main Playing Area */}
@@ -596,12 +692,63 @@ export default function App() {
           notationType={notationType}
           disabled={isAiThinking || gameState.status !== 'playing'}
         />
+
+        {/* On-Board / In-Game Spotify Player (Always active right on the game screen) */}
+        <InGameSpotifyDock
+          currentTrack={currentSpotifyTrack || SPOTIFY_PRESETS[0]}
+          onSelectTrack={(track) => {
+            setCurrentSpotifyTrack(track);
+            if (roomId) {
+              fetch(`/api/rooms/${roomId}/spotify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  spotifyUri: track.embedUrl,
+                  spotifyTitle: track.title,
+                  sharedBy: profile.displayName,
+                }),
+              }).catch(() => {});
+              wsRef.current?.send(
+                JSON.stringify({
+                  type: 'SYNC_SPOTIFY',
+                  spotifyUri: track.embedUrl,
+                  spotifyTitle: track.title,
+                })
+              );
+            }
+          }}
+          roomId={roomId}
+        />
       </main>
+
+      {/* Floating Spotify Quick Access Pill */}
+      <button
+        onClick={() => setSpotifyOpen(true)}
+        className="fixed bottom-3 right-3 sm:bottom-5 sm:right-5 z-30 px-3 py-2 rounded-full bg-[#121620]/95 hover:bg-[#161c28] border border-emerald-500/50 shadow-xl shadow-black/60 flex items-center gap-2 group backdrop-blur-md transition-all active:scale-95 text-xs"
+        aria-label="Spotify Music Lounge"
+        title="Open Spotify Lounge"
+      >
+        <div className="w-5 h-5 rounded-full bg-[#1DB954] flex items-center justify-center text-black">
+          <Music className="w-3 h-3 fill-current" />
+        </div>
+        <span className="font-bold text-emerald-300 hidden sm:inline max-w-[130px] truncate">
+          {currentSpotifyTrack?.title || 'Spotify Music'}
+        </span>
+        <div className="flex items-end gap-0.5 h-3">
+          <span className="w-0.5 h-full bg-[#1DB954] rounded-full animate-bounce [animation-delay:0ms]" />
+          <span className="w-0.5 h-2/3 bg-[#1DB954] rounded-full animate-bounce [animation-delay:150ms]" />
+          <span className="w-0.5 h-4/5 bg-[#1DB954] rounded-full animate-bounce [animation-delay:300ms]" />
+        </div>
+      </button>
 
       {/* Modals */}
       <ModeSelectModal
         isOpen={modeSelectOpen}
         onClose={() => setModeSelectOpen(false)}
+        onOpenTournaments={() => {
+          setModeSelectOpen(false);
+          setTournamentOpen(true);
+        }}
         onSelectAi={(diff, color) => startNewMatch('ai', gameConfig, color, diff)}
         onOpenFriendRoom={() => setFriendRoomOpen(true)}
         onStartMatchmaking={() => {
@@ -614,24 +761,80 @@ export default function App() {
       <FriendRoomModal
         isOpen={friendRoomOpen}
         onClose={() => setFriendRoomOpen(false)}
-        roomId={roomId}
-        isHost={isHost}
+        currentUser={profile}
+        currentRoomId={roomId}
         waitingForOpponent={waitingForFriend}
-        onCreateRoom={() => {
-          wsRef.current?.send(
-            JSON.stringify({
-              type: 'CREATE_ROOM',
-              config: gameConfig,
-            })
-          );
+        onRoomCreated={(id, state, color) => {
+          setRoomId(id);
+          setIsHost(true);
+          setWaitingForFriend(true);
+          setPlayerColor(color);
+          setFlipped(false);
+          setGameState(state);
+          setGameMode('friend');
+          wsRef.current?.send(JSON.stringify({ type: 'ATTACH_ROOM', roomId: id }));
         }}
-        onJoinRoom={(code) => {
-          wsRef.current?.send(
-            JSON.stringify({
-              type: 'JOIN_ROOM',
-              roomId: code,
-            })
-          );
+        onRoomJoined={(id, state, color, oppName) => {
+          setRoomId(id);
+          setIsHost(false);
+          setWaitingForFriend(false);
+          setPlayerColor(color);
+          setFlipped(color === 'black');
+          setOpponentName(oppName);
+          setGameState(state);
+          setFriendRoomOpen(false);
+          setGameMode('friend');
+          wsRef.current?.send(JSON.stringify({ type: 'ATTACH_ROOM', roomId: id }));
+        }}
+      />
+
+      <TournamentModal
+        isOpen={tournamentOpen}
+        onClose={() => setTournamentOpen(false)}
+        currentUser={profile}
+        onEnterTournamentMatch={(tId, match) => {
+          setTournamentOpen(false);
+          const isPlayer1 = match.player1?.id === profile.id;
+          const oppName = isPlayer1
+            ? match.player2?.name || 'Grandmaster Rival'
+            : match.player1?.name || 'Grandmaster Rival';
+          setOpponentName(oppName);
+          setPlayerColor(isPlayer1 ? 'white' : 'black');
+          setFlipped(!isPlayer1);
+          setGameMode('ai');
+          setAiDifficulty('hard');
+          setGameState(createNewGame(gameConfig));
+          setWhiteTimer(300);
+          setBlackTimer(300);
+        }}
+      />
+
+      <SpotifyPlayerModal
+        isOpen={spotifyOpen}
+        onClose={() => setSpotifyOpen(false)}
+        currentRoomId={roomId}
+        syncedTrack={currentSpotifyTrack}
+        onShareToRoom={(track) => {
+          setCurrentSpotifyTrack(track);
+          if (roomId) {
+            fetch(`/api/rooms/${roomId}/spotify`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                spotifyUri: track.embedUrl,
+                spotifyTitle: track.title,
+                sharedBy: profile.displayName,
+              }),
+            }).catch(() => {});
+
+            wsRef.current?.send(
+              JSON.stringify({
+                type: 'SYNC_SPOTIFY',
+                spotifyUri: track.embedUrl,
+                spotifyTitle: track.title,
+              })
+            );
+          }
         }}
       />
 
@@ -666,7 +869,6 @@ export default function App() {
         onUpdateConfig={(newCfg) => {
           setGameConfig((prev) => {
             const updated = { ...prev, ...newCfg };
-            // If changing starting layout, restart board
             if (newCfg.startingLayout && newCfg.startingLayout !== prev.startingLayout) {
               setGameState(createNewGame(updated));
             }

@@ -43,7 +43,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   stalemateRule: 'loss',
   moveLimitWithoutCapture: 40,
   repetitionRuleEnabled: true,
-  captureIsMandatory: true,
+  captureIsMandatory: true, // Strictly mandatory in Ethiopian Dama (መብላት ግዴታ ነው)
   majorityCaptureMandatory: false,
   allowManBackwardMove: false, // Ordinary piece cannot move backward (forward only)
   immediatePromotionInMultiJump: true,

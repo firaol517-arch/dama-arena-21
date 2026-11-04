@@ -83,7 +83,7 @@ test('3. Mandatory capture enforcement', () => {
   emptyBoard[4][3] = { id: 'b1', color: 'black', type: 'man' }; // target
 
   const state: GameState = {
-    ...createNewGame(),
+    ...createNewGame({ captureIsMandatory: true }),
     board: emptyBoard,
     turn: 'white',
   };

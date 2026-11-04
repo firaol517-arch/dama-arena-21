@@ -8,6 +8,7 @@ import http from 'http';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -15,10 +16,10 @@ import {
   applyMove,
   getLegalMoves,
 } from './src/game/engine.ts';
-import type { GameConfig, GameState, Move, PieceColor, PlayerProfile } from './src/game/types.ts';
+import type { GameConfig, GameState, Move, PieceColor, PlayerProfile, Tournament, TournamentMatch } from './src/game/types.ts';
 
 const isProd = process.env.NODE_ENV === 'production';
-const PORT = isProd ? parseInt(process.env.PORT || '8080', 10) : 3000;
+const PORT = 3000; // In AI Studio containers, NGINX always listens on 8080 and reverse proxies to port 3000
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
 const app = express();
@@ -29,6 +30,167 @@ const server = http.createServer(app);
 // Simple file-based persistence for profiles, matches, and leaderboard
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'dama_arena_data.json');
+
+const SEED_TOURNAMENTS: Tournament[] = [
+  {
+    id: 'tourn_addis_gp_2026',
+    title: 'የአዲስ አበባ ግራንድ ፕሪክስ (Addis Ababa Grand Prix)',
+    description: 'የ 8 ምርጥ ተጫዋቾች ባለ 4 (8x8) የዳማ የጥሎ ማለፍ ውድድር። አሸናፊው 5,000 ብር እና 500 Dama Gems ይሸለማል!',
+    organizer: {
+      id: 'org_ethiodama',
+      name: 'የኢትዮጵያ ዳማ ፌዴሬሽን',
+      avatarSeed: 'Federation',
+      role: 'ዋና አዘጋጅ / Organizer',
+    },
+    maxPlayers: 8,
+    boardSize: 8,
+    prizeXp: 5000,
+    status: 'registering',
+    registeredPlayers: [
+      { id: 'guest_dama_king', name: 'Abebe B. (Dama Master)', elo: 1850, wins: 39, points: 12, avatarSeed: 'Abebe' },
+      { id: 'guest_haile_g', name: 'Haile Gebrselassie', elo: 1720, wins: 24, points: 9, avatarSeed: 'Haile' },
+      { id: 'guest_selam_t', name: 'Selamawit T.', elo: 1640, wins: 18, points: 6, avatarSeed: 'Selam' },
+      { id: 'guest_dawit_k', name: 'Dawit Kebede', elo: 1580, wins: 15, points: 4, avatarSeed: 'Dawit' },
+      { id: 'guest_almaz_a', name: 'Almaz Ayana', elo: 1610, wins: 17, points: 5, avatarSeed: 'Almaz' },
+    ],
+    matches: [
+      {
+        id: 'match_qf_1',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 1 (Quarterfinal 1)',
+        player1: { id: 'guest_dama_king', name: 'Abebe B.', elo: 1850 },
+        player2: { id: 'guest_dawit_k', name: 'Dawit K.', elo: 1580 },
+        status: 'upcoming',
+      },
+      {
+        id: 'match_qf_2',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 2 (Quarterfinal 2)',
+        player1: { id: 'guest_haile_g', name: 'Haile G.', elo: 1720 },
+        player2: { id: 'guest_almaz_a', name: 'Almaz A.', elo: 1610 },
+        status: 'upcoming',
+      },
+      {
+        id: 'match_qf_3',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 3 (Quarterfinal 3)',
+        player1: { id: 'guest_selam_t', name: 'Selamawit T.', elo: 1640 },
+        status: 'upcoming',
+      },
+      {
+        id: 'match_qf_4',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 4 (Quarterfinal 4)',
+        status: 'upcoming',
+      },
+    ],
+    createdAt: Date.now() - 3600000 * 2,
+  },
+  {
+    id: 'tourn_championship_2026',
+    title: 'የኢትዮጵያ ዳማ ብሔራዊ ሻምፒዮና (National Championship)',
+    description: 'የ 16 ተጫዋቾች ታላቅ የዳማ ዋንጫ ውድድር። አሸናፊው 10,000 ብር እና የክብር ወርቅ ዋንጫ ይቀበላል!',
+    organizer: {
+      id: 'org_championship',
+      name: 'Dama Arena Premier',
+      avatarSeed: 'DamaArena',
+      role: 'አስተባባሪ / Coordinator',
+    },
+    maxPlayers: 16,
+    boardSize: 8,
+    prizeXp: 10000,
+    status: 'registering',
+    registeredPlayers: [
+      { id: 'guest_dama_king', name: 'Abebe B. (Dama Master)', elo: 1850, wins: 39, points: 15, avatarSeed: 'Abebe' },
+      { id: 'guest_haile_g', name: 'Haile Gebrselassie', elo: 1720, wins: 24, points: 12, avatarSeed: 'Haile' },
+      { id: 'guest_selam_t', name: 'Selamawit T.', elo: 1640, wins: 18, points: 10, avatarSeed: 'Selam' },
+      { id: 'p_yared', name: 'Yared Tadesse', elo: 1590, wins: 14, points: 7, avatarSeed: 'Yared' },
+      { id: 'p_solomon', name: 'Solomon Bogale', elo: 1670, wins: 21, points: 11, avatarSeed: 'Solomon' },
+      { id: 'p_aster', name: 'Aster Aweke', elo: 1530, wins: 11, points: 5, avatarSeed: 'Aster' },
+      { id: 'p_bereket', name: 'Bereket Mengistu', elo: 1600, wins: 16, points: 8, avatarSeed: 'Bereket' },
+    ],
+    matches: [
+      {
+        id: 'champ_qf_1',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 1 (Quarterfinal 1)',
+        player1: { id: 'p_yared', name: 'Yared Tadesse', elo: 1590 },
+        player2: { id: 'p_solomon', name: 'Solomon Bogale', elo: 1670 },
+        status: 'upcoming',
+      },
+      {
+        id: 'champ_qf_2',
+        round: 1,
+        roundName: 'ሩብ ፍጻሜ 2 (Quarterfinal 2)',
+        player1: { id: 'p_bereket', name: 'Bereket Mengistu', elo: 1600 },
+        player2: { id: 'p_aster', name: 'Aster Aweke', elo: 1530 },
+        status: 'upcoming',
+      },
+      {
+        id: 'champ_sf_1',
+        round: 2,
+        roundName: 'ግማሽ ፍጻሜ (Semifinal)',
+        player1: { id: 'guest_dama_king', name: 'Abebe B. (1850 ELO)', elo: 1850 },
+        status: 'upcoming',
+      },
+      {
+        id: 'champ_final',
+        round: 3,
+        roundName: 'ብሔራዊ ዋንጫ ፍጻሜ (Championship Final)',
+        status: 'upcoming',
+      },
+    ],
+    createdAt: Date.now() - 86400000,
+  },
+  {
+    id: 'tourn_blitz_cup_daily',
+    title: 'የሳምንቱ ፈጣን ዋንጫ (Weekly Blitz Cup)',
+    description: 'የ 4 ተጫዋቾች ፈጣን የግማሽ ፍጻሜ እና የፍጻሜ ግጥሚያ። የሽልማት ፈንድ 2,500 ብር!',
+    organizer: {
+      id: 'org_blitz',
+      name: 'Blitz League Addis',
+      avatarSeed: 'Blitz',
+      role: 'ውድድር መሪ / Blitz Host',
+    },
+    maxPlayers: 8,
+    boardSize: 8,
+    prizeXp: 2500,
+    status: 'live',
+    registeredPlayers: [
+      { id: 'guest_dama_king', name: 'Abebe B.', elo: 1850, wins: 39, points: 6, avatarSeed: 'Abebe' },
+      { id: 'guest_haile_g', name: 'Haile G.', elo: 1720, wins: 24, points: 6, avatarSeed: 'Haile' },
+      { id: 'guest_selam_t', name: 'Selamawit T.', elo: 1640, wins: 18, points: 3, avatarSeed: 'Selam' },
+      { id: 'guest_dawit_k', name: 'Dawit K.', elo: 1580, wins: 15, points: 3, avatarSeed: 'Dawit' },
+    ],
+    matches: [
+      {
+        id: 'blitz_sf_1',
+        round: 1,
+        roundName: 'ግማሽ ፍጻሜ 1 (Semifinal 1)',
+        player1: { id: 'guest_dama_king', name: 'Abebe B.', elo: 1850 },
+        player2: { id: 'guest_dawit_k', name: 'Dawit K.', elo: 1580 },
+        winnerId: 'guest_dama_king',
+        status: 'finished',
+      },
+      {
+        id: 'blitz_sf_2',
+        round: 1,
+        roundName: 'ግማሽ ፍጻሜ 2 (Semifinal 2)',
+        player1: { id: 'guest_haile_g', name: 'Haile G.', elo: 1720 },
+        player2: { id: 'guest_selam_t', name: 'Selamawit T.', elo: 1640 },
+        status: 'ongoing',
+      },
+      {
+        id: 'blitz_final',
+        round: 2,
+        roundName: 'ዋንጫ ፍጻሜ (Grand Final)',
+        player1: { id: 'guest_dama_king', name: 'Abebe B.', elo: 1850 },
+        status: 'upcoming',
+      },
+    ],
+    createdAt: Date.now() - 1800000,
+  },
+];
 
 interface StoredData {
   users: Record<string, PlayerProfile>;
@@ -43,6 +205,7 @@ interface StoredData {
     playedAt: number;
     difficulty?: string;
   }>;
+  tournaments: Tournament[];
 }
 
 function loadData(): StoredData {
@@ -52,7 +215,12 @@ function loadData(): StoredData {
     }
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (!parsed.tournaments || parsed.tournaments.length === 0) {
+        parsed.tournaments = SEED_TOURNAMENTS;
+        saveData(parsed);
+      }
+      return parsed;
     }
   } catch (err) {
     console.warn('Error loading data file, initializing fresh store:', err);
@@ -114,6 +282,7 @@ function loadData(): StoredData {
       },
     },
     matches: [],
+    tournaments: SEED_TOURNAMENTS,
   };
   saveData(initial);
   return initial;
@@ -319,6 +488,179 @@ app.post('/api/matches/record', (req, res) => {
   res.json({ success: true, matchId });
 });
 
+// --- REAL TOURNAMENTS API ---
+app.get('/api/tournaments', (req, res) => {
+  res.json(store.tournaments || SEED_TOURNAMENTS);
+});
+
+app.post('/api/tournaments/:id/join', (req, res) => {
+  const { id } = req.params;
+  const { userId, displayName, elo } = req.body;
+  if (!store.tournaments) store.tournaments = [...SEED_TOURNAMENTS];
+  const tournament = store.tournaments.find((t) => t.id === id);
+  if (!tournament) return res.status(404).json({ error: 'ውድድሩ አልተገኘም (Tournament not found)' });
+
+  const alreadyJoined = tournament.registeredPlayers.some((p) => p.id === userId);
+  if (alreadyJoined) {
+    return res.json({ success: true, message: 'ቀድመው ተመዝግበዋል (Already registered)', tournament });
+  }
+
+  if (tournament.registeredPlayers.length >= tournament.maxPlayers) {
+    return res.status(400).json({ error: 'ውድድሩ ሙሉ ነው (Tournament is full)' });
+  }
+
+  const newPlayer = {
+    id: userId,
+    name: displayName || 'Warrior',
+    elo: elo || 1200,
+    wins: 0,
+    points: 0,
+    avatarSeed: displayName || 'User',
+  };
+  tournament.registeredPlayers.push(newPlayer);
+
+  // Assign to empty bracket match slot if available
+  for (const m of tournament.matches) {
+    if (!m.player1) {
+      m.player1 = { id: userId, name: newPlayer.name, elo: newPlayer.elo };
+      break;
+    } else if (!m.player2 && m.player1.id !== userId) {
+      m.player2 = { id: userId, name: newPlayer.name, elo: newPlayer.elo };
+      break;
+    }
+  }
+
+  saveData(store);
+  res.json({ success: true, message: 'በውድድሩ ላይ በተሳካ ሁኔታ ተመዝግበዋል!', tournament });
+});
+
+// --- BULLETPROOF MULTIPLAYER ROOMS REST API ---
+app.get('/api/rooms', (req, res) => {
+  const openRooms: any[] = [];
+  rooms.forEach((r) => {
+    if (!r.isPrivate && !r.black && r.state.status === 'playing') {
+      openRooms.push({
+        id: r.id,
+        hostName: r.white?.displayName || 'Dama Host',
+        hostId: r.white?.userId,
+        boardSize: r.config.boardSize,
+        createdAt: r.createdAt,
+        timerMinutes: Math.round(r.whiteTimerMs / 60000),
+      });
+    }
+  });
+  res.json(openRooms.reverse());
+});
+
+app.post('/api/rooms/create', (req, res) => {
+  const { userId, displayName, config, isPrivate, timerMinutes } = req.body;
+  const roomId = 'DM' + Math.floor(1000 + Math.random() * 9000);
+  const state = createNewGame(config || {});
+
+  const room: MatchRoom = {
+    id: roomId,
+    createdAt: Date.now(),
+    config: state.config,
+    white: { userId: userId || 'host', displayName: displayName || 'Host', color: 'white' },
+    spectators: [],
+    state,
+    isPrivate: Boolean(isPrivate),
+    whiteTimerMs: (timerMinutes || 10) * 60 * 1000,
+    blackTimerMs: (timerMinutes || 10) * 60 * 1000,
+    lastTimerTick: Date.now(),
+  };
+
+  rooms.set(roomId, room);
+  res.json({ success: true, roomId, state, color: 'white' });
+});
+
+app.post('/api/rooms/join', (req, res) => {
+  const { roomId, userId, displayName } = req.body;
+  const cleanCode = String(roomId || '').trim().toUpperCase();
+  const room = rooms.get(cleanCode);
+
+  if (!room) {
+    return res.status(404).json({ success: false, error: 'የተሳሳተ ኮድ፤ ክፍሉ አልተገኘም (Room code not found)' });
+  }
+
+  if (room.black && room.black.userId !== userId) {
+    return res.status(400).json({ success: false, error: 'ክፍሉ ሙሉ ነው፤ ሌላ ተጫዋች ገብቷል (Room is already full)' });
+  }
+
+  if (!room.black) {
+    room.black = { userId, displayName: displayName || 'Challenger', color: 'black' };
+    broadcastToRoom(room, {
+      type: 'OPPONENT_JOINED',
+      opponentName: displayName || 'Challenger',
+      state: room.state,
+    });
+  }
+
+  res.json({
+    success: true,
+    roomId: room.id,
+    color: room.white?.userId === userId ? 'white' : 'black',
+    opponentName: room.white?.userId === userId ? room.black?.displayName : room.white?.displayName,
+    state: room.state,
+  });
+});
+
+app.get('/api/rooms/:id/state', (req, res) => {
+  const room = rooms.get(req.params.id.toUpperCase());
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  res.json({
+    id: room.id,
+    state: room.state,
+    whiteName: room.white?.displayName,
+    blackName: room.black?.displayName,
+    hasOpponent: Boolean(room.black),
+    spotifyUri: room.spotifyUri,
+    spotifyTitle: room.spotifyTitle,
+  });
+});
+
+app.post('/api/rooms/:id/spotify', (req, res) => {
+  const room = rooms.get(req.params.id.toUpperCase());
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const { spotifyUri, spotifyTitle, sharedBy } = req.body;
+  room.spotifyUri = spotifyUri;
+  room.spotifyTitle = spotifyTitle;
+  broadcastToRoom(room, {
+    type: 'SPOTIFY_UPDATED',
+    spotifyUri,
+    spotifyTitle,
+    sharedBy: sharedBy || 'Opponent',
+  });
+  res.json({ success: true, spotifyUri, spotifyTitle });
+});
+
+app.post('/api/rooms/:id/move', (req, res) => {
+  const room = rooms.get(req.params.id.toUpperCase());
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const { move } = req.body;
+  if (!move) return res.status(400).json({ error: 'No move provided' });
+
+  const nextState = applyMove(room.state, move);
+  room.state = nextState;
+
+  broadcastToRoom(room, {
+    type: 'MOVE_APPLIED',
+    move,
+    state: nextState,
+  });
+
+  if (nextState.status !== 'playing') {
+    broadcastToRoom(room, {
+      type: 'GAME_OVER',
+      status: nextState.status,
+      winner: nextState.winner,
+      reason: nextState.statusReason,
+    });
+  }
+
+  res.json({ success: true, state: nextState });
+});
+
 // TELEGRAM BOT WEBHOOK SIMULATOR & EXPORT INFO
 app.get('/api/telegram/bot-info', (req, res) => {
   res.json({
@@ -327,6 +669,8 @@ app.get('/api/telegram/bot-info', (req, res) => {
     commands: [
       { command: 'start', description: 'Launch Dama Arena Web App' },
       { command: 'play', description: 'Start an Ethiopian Dama game' },
+      { command: 'tournaments', description: 'Join Dama Tournaments' },
+      { command: 'rooms', description: 'Active multiplayer rooms' },
       { command: 'rules', description: 'Learn confirmed Ethiopian Dama rules' },
       { command: 'profile', description: 'Check your rank and stats' },
       { command: 'leaderboard', description: 'View top Dama players' },
@@ -336,7 +680,7 @@ app.get('/api/telegram/bot-info', (req, res) => {
 
 // MULTIPLAYER ROOM & WEBSOCKET ENGINE
 interface PlayerClient {
-  ws: WebSocket;
+  ws?: WebSocket;
   userId: string;
   displayName: string;
   color?: PieceColor;
@@ -354,6 +698,8 @@ interface MatchRoom {
   whiteTimerMs: number;
   blackTimerMs: number;
   lastTimerTick: number;
+  spotifyUri?: string;
+  spotifyTitle?: string;
 }
 
 const rooms = new Map<string, MatchRoom>();
@@ -363,10 +709,16 @@ const wss = new WebSocketServer({ noServer: true });
 
 function broadcastToRoom(room: MatchRoom, message: object) {
   const json = JSON.stringify(message);
-  if (room.white?.ws.readyState === WebSocket.OPEN) room.white.ws.send(json);
-  if (room.black?.ws.readyState === WebSocket.OPEN) room.black.ws.send(json);
+  if (room.white?.ws && room.white.ws.readyState === WebSocket.OPEN) {
+    try { room.white.ws.send(json); } catch (_) {}
+  }
+  if (room.black?.ws && room.black.ws.readyState === WebSocket.OPEN) {
+    try { room.black.ws.send(json); } catch (_) {}
+  }
   for (const s of room.spectators) {
-    if (s.ws.readyState === WebSocket.OPEN) s.ws.send(json);
+    if (s.ws && s.ws.readyState === WebSocket.OPEN) {
+      try { s.ws.send(json); } catch (_) {}
+    }
   }
 }
 
@@ -386,6 +738,32 @@ wss.on('connection', (ws: WebSocket) => {
             displayName: msg.displayName || 'Player',
           };
           ws.send(JSON.stringify({ type: 'INIT_ACK', userId: clientUser.userId }));
+          break;
+        }
+
+        case 'ATTACH_ROOM': {
+          if (!clientUser) return;
+          const roomId = (msg.roomId || '').toUpperCase();
+          const room = rooms.get(roomId);
+          if (room) {
+            currentRoomId = roomId;
+            if (room.white?.userId === clientUser.userId) {
+              room.white.ws = ws;
+            } else if (room.black?.userId === clientUser.userId) {
+              room.black.ws = ws;
+            } else {
+              room.spectators.push({ ...clientUser, ws });
+            }
+            ws.send(JSON.stringify({
+              type: 'ATTACH_ACK',
+              roomId,
+              state: room.state,
+              whiteName: room.white?.displayName,
+              blackName: room.black?.displayName,
+              spotifyUri: room.spotifyUri,
+              spotifyTitle: room.spotifyTitle,
+            }));
+          }
           break;
         }
 
@@ -447,7 +825,7 @@ wss.on('connection', (ws: WebSocket) => {
             );
 
             // Inform white player that opponent joined
-            if (room.white?.ws.readyState === WebSocket.OPEN) {
+            if (room.white?.ws && room.white.ws.readyState === WebSocket.OPEN) {
               room.white.ws.send(
                 JSON.stringify({
                   type: 'OPPONENT_JOINED',
@@ -476,7 +854,7 @@ wss.on('connection', (ws: WebSocket) => {
           if (!clientUser) return;
           // Filter stale matchmaking queue
           matchmakingQueue = matchmakingQueue.filter(
-            (p) => p.ws.readyState === WebSocket.OPEN && p.userId !== clientUser!.userId
+            (p) => p.ws && p.ws.readyState === WebSocket.OPEN && p.userId !== clientUser!.userId
           );
 
           if (matchmakingQueue.length > 0) {
@@ -504,25 +882,29 @@ wss.on('connection', (ws: WebSocket) => {
 
             rooms.set(roomId, room);
 
-            whitePlayer.ws.send(
-              JSON.stringify({
-                type: 'MATCH_FOUND',
-                roomId,
-                color: 'white',
-                opponentName: blackPlayer.displayName,
-                state: room.state,
-              })
-            );
+            if (whitePlayer.ws && whitePlayer.ws.readyState === WebSocket.OPEN) {
+              whitePlayer.ws.send(
+                JSON.stringify({
+                  type: 'MATCH_FOUND',
+                  roomId,
+                  color: 'white',
+                  opponentName: blackPlayer.displayName,
+                  state: room.state,
+                })
+              );
+            }
 
-            blackPlayer.ws.send(
-              JSON.stringify({
-                type: 'MATCH_FOUND',
-                roomId,
-                color: 'black',
-                opponentName: whitePlayer.displayName,
-                state: room.state,
-              })
-            );
+            if (blackPlayer.ws && blackPlayer.ws.readyState === WebSocket.OPEN) {
+              blackPlayer.ws.send(
+                JSON.stringify({
+                  type: 'MATCH_FOUND',
+                  roomId,
+                  color: 'black',
+                  opponentName: whitePlayer.displayName,
+                  state: room.state,
+                })
+              );
+            }
           } else {
             matchmakingQueue.push(clientUser);
             ws.send(JSON.stringify({ type: 'MATCHMAKING_WAITING' }));
@@ -605,6 +987,21 @@ wss.on('connection', (ws: WebSocket) => {
           break;
         }
 
+        case 'SYNC_SPOTIFY': {
+          if (!currentRoomId || !clientUser) return;
+          const room = rooms.get(currentRoomId);
+          if (!room) return;
+          room.spotifyUri = msg.spotifyUri;
+          room.spotifyTitle = msg.spotifyTitle;
+          broadcastToRoom(room, {
+            type: 'SPOTIFY_UPDATED',
+            spotifyUri: msg.spotifyUri,
+            spotifyTitle: msg.spotifyTitle,
+            sharedBy: clientUser.displayName,
+          });
+          break;
+        }
+
         case 'REMATCH_OFFER': {
           if (!currentRoomId || !clientUser) return;
           const room = rooms.get(currentRoomId);
@@ -673,45 +1070,85 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 // TELEGRAM BOT AUTOMATION & POLLING
-const APP_URL = process.env.PUBLIC_APP_URL || 'https://ais-pre-37d6qzhtee3lmd2myppu6s-865179148767.europe-west2.run.app';
+let APP_URL = process.env.PUBLIC_APP_URL || 'https://isaac-roger-occur-claims.trycloudflare.com';
+
+export async function updateTelegramMenuButton(url: string) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setChatMenuButton`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        menu_button: {
+          type: 'web_app',
+          text: '⚔️ Play Dama 🇪🇹',
+          web_app: { url },
+        },
+      }),
+    });
+    console.log(`✅ Telegram Bot Menu Button synced to: ${url}`);
+  } catch (e) {
+    console.warn('Failed to sync Telegram Menu Button:', e);
+  }
+}
+
+function startCloudflareTunnel() {
+  const binaryPath = path.resolve(process.cwd(), 'bin', 'cloudflared');
+  if (!fs.existsSync(binaryPath)) {
+    console.log('Tunnel: ./bin/cloudflared not found, skipping auto-tunnel.');
+    return;
+  }
+
+  console.log('🚀 Launching persistent Cloudflare Tunnel from ./bin/cloudflared...');
+  const tunnel = spawn(binaryPath, ['tunnel', '--protocol', 'http2', '--url', 'http://127.0.0.1:3000', '--no-autoupdate']);
+
+  const handleOutput = (data: Buffer) => {
+    const text = data.toString();
+    const match = text.match(/https:\/\/[-a-z0-9.]*\.trycloudflare\.com/);
+    if (match && match[0] && match[0] !== APP_URL) {
+      APP_URL = match[0];
+      console.log(`⚡ CLOUDFLARE TUNNEL LIVE: ${APP_URL}`);
+      updateTelegramMenuButton(APP_URL);
+    }
+  };
+
+  tunnel.stdout.on('data', handleOutput);
+  tunnel.stderr.on('data', handleOutput);
+
+  tunnel.on('close', (code) => {
+    console.log(`Tunnel closed with code ${code}, restarting in 5s...`);
+    setTimeout(startCloudflareTunnel, 5000);
+  });
+}
 
 function buildTelegramKeyboard(url: string = APP_URL) {
+  const v = 'v=3_0_live';
   return {
     inline_keyboard: [
       [
         {
-          text: '⚔️ Play Dama Arena 🇪🇹',
-          web_app: { url: `${url}?tgWebAppStartParam=play` },
+          text: '⚔️ አሁኑኑ ተጫወት | Play Dama 🇪🇹',
+          web_app: { url: `${url}?${v}&tgWebAppStartParam=play` },
         },
       ],
       [
         {
-          text: '🤖 Play vs AI',
-          web_app: { url: `${url}?mode=ai` },
+          text: '🏆 ውድድሮች | Tournaments 👑',
+          web_app: { url: `${url}?${v}&mode=tournaments` },
         },
         {
-          text: '👥 Play with Friend',
-          web_app: { url: `${url}?mode=friend` },
-        },
-      ],
-      [
-        {
-          text: '🌐 Online Multiplayer',
-          web_app: { url: `${url}?mode=multiplayer` },
-        },
-        {
-          text: '🏆 Leaderboard',
-          web_app: { url: `${url}?mode=leaderboard` },
+          text: '👥 ከጓደኛ ጋር / ክፍሎች (Rooms)',
+          web_app: { url: `${url}?${v}&mode=friend` },
         },
       ],
       [
         {
-          text: '👤 My Profile',
-          web_app: { url: `${url}?mode=profile` },
+          text: '🤖 ከኮምፒውተር ጋር (vs AI)',
+          web_app: { url: `${url}?${v}&mode=ai` },
         },
         {
-          text: '📜 Game Rules',
-          web_app: { url: `${url}?mode=rules` },
+          text: '📊 የደረጃ ሰንጠረዥ (Leaderboard)',
+          web_app: { url: `${url}?${v}&mode=leaderboard` },
         },
       ],
     ],
@@ -749,29 +1186,41 @@ async function handleTelegramUpdate(update: any) {
     const deepParam = parts.length > 1 ? parts[1] : '';
     const launchUrl = deepParam ? `${APP_URL}?tgWebAppStartParam=${deepParam}` : APP_URL;
 
-    const welcomeMsg = `<b>እንኳን ወደ DAMA ARENA በደህና መጡ! 🇪🇹👑</b>\n<b>Welcome to DAMA ARENA, ${userName}!</b>\n\nPlay authentic Ethiopian Dama, challenge tactical AI, and compete with friends in real-time matches.\n\nTap below to launch the arena!`;
+    const welcomeMsg = `<b>እንኳን ወደ DAMA ARENA በደህና መጡ! 🇪🇹👑</b>\n<b>Welcome, ${userName}!</b>\n\nትክክለኛውን የኢትዮጵያ <b>ባለ 4 ዳማ (8x8 Board)</b> ከኮምፒውተር ጋር ወይም ከጓደኛዎ ጋር በኦንላይን ይጫወቱ!\n\n✨ <b>ዋና ዋና ገጽታዎች፦</b>\n• 12 ጠጠሮች በ 3 ረድፍ (ባለ 4 ቦርድ)\n• ጠጠር ወደ ፊት ብቻ ይራመዳል (ወደ ኋላ መሄድ አይችልም)\n• ዳማ በረዥሙ ይበራል\n• የቀጥታ ውድድሮች እና የክፍት ክፍሎች ዝርዝር\n\nከታች ከቀረቡት አማራጮች የሚፈልጉትን ይምረጡ፦`;
 
     const keyboard = deepParam
       ? {
           inline_keyboard: [
-            [{ text: '⚡ Join Room Now', web_app: { url: launchUrl } }],
+            [{ text: '⚡ ጨዋታውን ተቀላቀል | Join Room Now', web_app: { url: launchUrl } }],
             ...buildTelegramKeyboard(APP_URL).inline_keyboard,
           ],
         }
       : buildTelegramKeyboard(APP_URL);
 
     await sendTelegramMessage(chatId, welcomeMsg, keyboard);
+  } else if (text === '/tournaments') {
+    await sendTelegramMessage(chatId, `🏆 <b>የዳማ ውድድሮች (Dama Tournaments)፦</b>\nበቀጥታ በሚተላለፉ ውድድሮች ላይ ይሳተፉ እና ትላልቅ የዋንጫ ሽልማቶችን ያሸንፉ!`, {
+      inline_keyboard: [[{ text: '🏆 ውድድሮችን ክፈት | Open Tournaments', web_app: { url: `${APP_URL}?mode=tournaments` } }]],
+    });
   } else if (text === '/rules') {
-    const rulesMsg = `<b>የኢትዮጵያ ዳማ ህጎች (Ethiopian Dama Rules):</b>\n\n• <b>10x10 Board:</b> Played on dark squares.\n• <b>Ordinary Pieces:</b> Move 1 square diagonally forward OR backward.\n• <b>Captures:</b> Jump diagonally forward or backward over adjacent enemy.\n• <b>Mandatory Captures:</b> Any available capture must be taken. Multi-captures are mandatory.\n• <b>Free Choice of Routes:</b> Max captures is NOT mandatory; choose any legal route!\n• <b>Immediate Promotion:</b> Reaching farthest row promotes immediately (even mid-sequence) and continues as King!\n• <b>Flying Kings:</b> Long-range movement and capture over diagonals.`;
+    const rulesMsg = `📜 <b>የኢትዮጵያ ዳማ ህጎች (Ethiopian Dama Rules):</b>\n\n• <b>ባለ 4 (8x8 ቦርድ)፦</b> በእያንዳንዱ ረድፍ 4 ጥቁር ካሬዎች (በአጠቃላይ 12 ጠጠሮች በ3 ረድፍ)።\n• <b>የጠጠር እንቅስቃሴ፦</b> ጠጠር ወደ ፊት ብቻ በሰያፍ 1 ካሬ ይራመዳል። <b>ጠጠር ወደ ኋላ መሄድ አይችልም!</b>\n• <b>መብላት (Captures)፦</b> የጠላት ጠጠርን በሰያፍ ዘሎ ክፍት ቦታ ላይ በማረፍ ይበላል።\n• <b>ዳማ መሆን፦</b> ጠጠር የመጨረሻው ረድፍ ሲደርስ ወዲያውኑ ዳማ (ንጉሥ) ይሆናል።\n• <b>የዳማ እንቅስቃሴ፦</b> ዳማ በረዥሙ ወደ የትኛውም አቅጣጫ ይበራል፤ ይበላል።`;
     await sendTelegramMessage(chatId, rulesMsg, buildTelegramKeyboard(APP_URL));
   } else if (text === '/play') {
     await sendTelegramMessage(chatId, `⚔️ <b>ጨዋታ ለመጀመር ዝግጁ ኖት?</b>\nReady for battle? Tap below to jump straight into a match!`, buildTelegramKeyboard(APP_URL));
-  } else if (text === '/profile') {
-    await sendTelegramMessage(chatId, `👤 View your ELO rating, level, badges, and win streak inside the app:`, buildTelegramKeyboard(APP_URL));
+  } else if (text === '/ai') {
+    await sendTelegramMessage(chatId, `🤖 <b>ከኮምፒውተር ጋር ይጫወቱ (vs AI)፦</b>\nየችሎታ ደረጃዎን (Easy, Medium, Master) መርጠው ይወዳደሩ!`, {
+      inline_keyboard: [[{ text: '🤖 ከ AI ጋር ጀምር', web_app: { url: `${APP_URL}?mode=ai` } }]],
+    });
+  } else if (text === '/friend' || text === '/rooms') {
+    await sendTelegramMessage(chatId, `👥 <b>ከጓደኛ ጋር መጫወቻ እና ክፍሎች (Play Friend & Rooms)፦</b>\nየራስዎን ክፍል ይፍጠሩ ወይም ክፍት ክፍሎችን ተቀላቅለው ይጫወቱ!`, {
+      inline_keyboard: [[{ text: '👥 ክፍሎችን ክፈት | Open Rooms', web_app: { url: `${APP_URL}?mode=friend` } }]],
+    });
   } else if (text === '/leaderboard') {
-    await sendTelegramMessage(chatId, `🏆 See where you rank against the top Ethiopian Dama grandmasters:`, buildTelegramKeyboard(APP_URL));
+    await sendTelegramMessage(chatId, `📊 <b>የደረጃ ሰንጠረዥ (Leaderboard):</b>\nከፍተኛ ደረጃ ላይ ያሉ የኢትዮጵያ ዳማ አሸናፊዎችን ይመልከቱ፦`, {
+      inline_keyboard: [[{ text: '📊 ደረጃ ሰንጠረዥ ይመልከቱ', web_app: { url: `${APP_URL}?mode=leaderboard` } }]],
+    });
   } else if (text === '/help') {
-    const helpMsg = `<b>Dama Arena Commands:</b>\n/start - Open main menu & game\n/play - Start a match\n/rules - Ethiopian Dama official rules\n/profile - Check your profile & stats\n/leaderboard - Top ranked players\n/help - Show this guide`;
+    const helpMsg = `<b>Dama Arena Bot Commands:</b>\n/play - ⚔️ አሁኑኑ ተጫወት (Play Now)\n/tournaments - 🏆 ውድድሮች (Tournaments)\n/friend - 👥 ከጓደኛ ጋር / ክፍሎች (Friends & Rooms)\n/ai - 🤖 ከኮምፒውተር ጋር (vs AI)\n/leaderboard - 📊 የደረጃ ሰንጠረዥ (Leaderboard)\n/rules - 📜 የዳማ ህጎች (Rules)`;
     await sendTelegramMessage(chatId, helpMsg, buildTelegramKeyboard(APP_URL));
   }
 }
@@ -797,7 +1246,7 @@ async function initTelegramBotService() {
       body: JSON.stringify({
         menu_button: {
           type: 'web_app',
-          text: '⚔️ Play Dama',
+          text: '⚔️ Play Dama 🇪🇹',
           web_app: { url: APP_URL },
         },
       }),
@@ -809,12 +1258,12 @@ async function initTelegramBotService() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         commands: [
-          { command: 'play', description: '⚔️ Launch Dama Arena' },
-          { command: 'start', description: '👑 Open Main Menu & Play' },
-          { command: 'rules', description: '📜 Ethiopian Dama Rules' },
-          { command: 'leaderboard', description: '🏆 Global Rankings' },
-          { command: 'profile', description: '👤 My Profile & Stats' },
-          { command: 'help', description: '❓ Help and Game Guide' },
+          { command: 'play', description: '⚔️ አሁኑኑ ተጫወት (Play Dama)' },
+          { command: 'tournaments', description: '🏆 ውድድሮች (Tournaments)' },
+          { command: 'friend', description: '👥 ከጓደኛ ጋር / ክፍሎች (Friends & Rooms)' },
+          { command: 'ai', description: '🤖 ከኮምፒውተር ጋር (vs AI)' },
+          { command: 'leaderboard', description: '📊 የደረጃ ሰንጠረዥ (Rankings)' },
+          { command: 'rules', description: '📜 የኢትዮጵያ ዳማ ህጎች (Rules)' },
         ],
       }),
     });
@@ -846,9 +1295,33 @@ async function initTelegramBotService() {
   }
 }
 
-// Launch Vite in middleware mode during development or serve dist in production
+// Ultra-fast asset delivery: Serve pre-built dist with caching if available, else Vite
 async function bootstrap() {
-  if (!isProd) {
+  const distPath = path.resolve(process.cwd(), 'dist');
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (hasDist) {
+    console.log('⚡ High-Speed Mode: Serving minified production bundle from /dist with caching');
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          } else {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
+    app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -858,17 +1331,12 @@ async function bootstrap() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Dama Arena Server listening on port ${PORT} (prod=${isProd})`);
     initTelegramBotService();
+    startCloudflareTunnel();
   });
 }
 

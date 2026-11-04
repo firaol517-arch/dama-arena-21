@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Bot, Users, Globe, Smartphone, X, ChevronRight, Shield, Zap, Sparkles } from 'lucide-react';
+import { Bot, Users, Globe, Smartphone, X, ChevronRight, Shield, Zap, Sparkles, Trophy } from 'lucide-react';
 import { AiDifficulty } from '../game/ai';
 import { PieceColor } from '../game/types';
 
@@ -13,6 +13,7 @@ interface ModeSelectModalProps {
   onClose: () => void;
   onSelectAi: (difficulty: AiDifficulty, playerColor: PieceColor) => void;
   onOpenFriendRoom: () => void;
+  onOpenTournaments: () => void;
   onStartMatchmaking: () => void;
   onStartLocal: () => void;
 }
@@ -22,6 +23,7 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
   onClose,
   onSelectAi,
   onOpenFriendRoom,
+  onOpenTournaments,
   onStartMatchmaking,
   onStartLocal,
 }) => {
@@ -131,7 +133,38 @@ export const ModeSelectModal: React.FC<ModeSelectModalProps> = ({
                 <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-400 transition-colors" />
               </div>
 
-              {/* Option 2: Play with Friend */}
+              {/* Option 2: Live Tournaments */}
+              <div
+                onClick={() => {
+                  onClose();
+                  onOpenTournaments();
+                }}
+                className="group relative p-4 rounded-xl bg-gradient-to-r from-[#1E192B] via-[#1B1828] to-[#121620] border-2 border-amber-500/50 hover:border-amber-400 cursor-pointer transition-all hover:shadow-xl hover:shadow-amber-500/15 active:scale-[0.99] flex items-center justify-between"
+                role="button"
+                aria-label="Live Tournaments"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-amber-400 via-amber-500 to-amber-700 text-black flex items-center justify-center shadow-lg shadow-amber-500/20">
+                    <Trophy className="w-6 h-6 drop-shadow" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-base text-amber-300 group-hover:text-amber-200 transition-colors">
+                        🏆 ውድድሮች (Tournaments)
+                      </span>
+                      <span className="text-[10px] uppercase font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
+                        LIVE
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      የአዲስ አበባ ግራንድ ፕሪክስ እና የብሔራዊ ዋንጫ የጥሎ ማለፍ ውድድሮች።
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-amber-400 group-hover:translate-x-0.5 transition-all" />
+              </div>
+
+              {/* Option 3: Play with Friend & Rooms */}
               <div
                 onClick={() => {
                   onClose();

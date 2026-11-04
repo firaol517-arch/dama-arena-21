@@ -18,50 +18,52 @@ export interface AiConfig {
   maxDepth: number;
   useQuiescence: boolean;
   timeLimitMs: number;
-  randomness: number; // 0 (deterministic) to 1 (high jitter for beginner)
+  randomness: number; // 0 (tactical master) to 0.25 (gentle beginner)
 }
 
 export const DIFFICULTY_PRESETS: Record<AiDifficulty, AiConfig> = {
   beginner: {
-    maxDepth: 1,
-    useQuiescence: false,
-    timeLimitMs: 250,
-    randomness: 0.35,
-  },
-  easy: {
     maxDepth: 2,
     useQuiescence: false,
-    timeLimitMs: 400,
-    randomness: 0.15,
+    timeLimitMs: 150,
+    randomness: 0.25,
   },
-  medium: {
+  easy: {
     maxDepth: 3,
     useQuiescence: true,
-    timeLimitMs: 800,
-    randomness: 0.05,
+    timeLimitMs: 250,
+    randomness: 0.1,
+  },
+  medium: {
+    maxDepth: 4,
+    useQuiescence: true,
+    timeLimitMs: 400,
+    randomness: 0,
   },
   hard: {
-    maxDepth: 5,
+    maxDepth: 6,
     useQuiescence: true,
-    timeLimitMs: 1500,
+    timeLimitMs: 750,
     randomness: 0,
   },
   expert: {
     maxDepth: 7,
     useQuiescence: true,
-    timeLimitMs: 2500,
+    timeLimitMs: 1200,
     randomness: 0,
   },
 };
 
-// Material weights
+// Strategic weights for Ethiopian Dama
+// In Ethiopian Dama, a King flies freely across the entire diagonal; it is extremely powerful.
 const MAN_VALUE = 100;
-const KING_VALUE = 340;
-const CENTER_BONUS = 15;
-const ADVANCE_BONUS = 8;
-const BACK_RANK_DEFENSE = 20;
+const KING_VALUE = 480;
+const CENTER_BONUS = 25;
+const ADVANCE_BONUS = 14;
+const BACK_RANK_DEFENSE = 35;
+const MULTI_CAPTURE_BONUS = 150;
+const PROMOTION_THREAT_BONUS = 180;
 
-// Center squares on 10x10 dark board (rows 4, 5 and cols 3, 4, 5, 6)
 function isCenterSquare(r: number, c: number, boardSize: number = 8): boolean {
   if (boardSize === 8) {
     return (r === 3 || r === 4) && (c >= 2 && c <= 5);
@@ -71,7 +73,7 @@ function isCenterSquare(r: number, c: number, boardSize: number = 8): boolean {
 
 /**
  * Heuristic static evaluation function
- * Evaluates from the perspective of active color (+ means active color winning)
+ * Evaluates from the perspective of active color (+ means winning)
  */
 export function evaluatePosition(state: GameState, forColor: PieceColor): number {
   if (state.status === 'white_won') {
@@ -105,19 +107,26 @@ export function evaluatePosition(state: GameState, forColor: PieceColor): number
       let pieceScore = val;
 
       if (!isKing) {
-        // Center control
+        // Center control (central squares control board diagonals)
         if (isCenterSquare(r, c, boardSize)) {
           pieceScore += CENTER_BONUS;
         }
 
-        // Advance towards promotion
+        // Advance towards promotion (exponential as it gets closer to last row)
         if (isWhite) {
-          pieceScore += (boardSize - 1 - r) * ADVANCE_BONUS;
+          const distToPromotion = r; // white moves upward towards r = 0
+          const rankAdvance = boardSize - 1 - r;
+          pieceScore += rankAdvance * ADVANCE_BONUS;
+          if (distToPromotion === 1) pieceScore += PROMOTION_THREAT_BONUS;
+
           // Back rank defense bonus (protect against king infiltration)
           if (r === boardSize - 1) pieceScore += BACK_RANK_DEFENSE;
           whiteMen++;
         } else {
+          const distToPromotion = boardSize - 1 - r; // black moves downward towards r = boardSize - 1
           pieceScore += r * ADVANCE_BONUS;
+          if (distToPromotion === 1) pieceScore += PROMOTION_THREAT_BONUS;
+
           if (r === 0) pieceScore += BACK_RANK_DEFENSE;
           blackMen++;
         }
@@ -125,8 +134,8 @@ export function evaluatePosition(state: GameState, forColor: PieceColor): number
         if (isWhite) whiteKings++;
         else blackKings++;
 
-        // King center mobility bonus
-        if (isCenterSquare(r, c, boardSize)) pieceScore += CENTER_BONUS * 1.5;
+        // King mobility and diagonal dominance
+        if (isCenterSquare(r, c, boardSize)) pieceScore += CENTER_BONUS * 2;
       }
 
       if (isWhite) {
@@ -137,9 +146,9 @@ export function evaluatePosition(state: GameState, forColor: PieceColor): number
     }
   }
 
-  // Quick mobility estimation
+  // Active mobility reward (number of available legal moves)
   const legalMoves = getLegalMoves(state);
-  const activeMobility = legalMoves.length * 6;
+  const activeMobility = legalMoves.length * 8;
   if (state.turn === 'white') {
     score += activeMobility;
   } else {
@@ -151,11 +160,11 @@ export function evaluatePosition(state: GameState, forColor: PieceColor): number
 
 /**
  * Move ordering function:
- * Captures first (multi-captures highest), then promotions, then center moves.
+ * Captures first (highest number of captured pieces first, kings first), then promotions, then center control.
  */
 function orderMoves(moves: Move[]): Move[] {
   return [...moves].sort((a, b) => {
-    // Multi-captures first
+    // Multi-captures highest priority
     const capDiff = b.capturedPositions.length - a.capturedPositions.length;
     if (capDiff !== 0) return capDiff;
 
@@ -164,16 +173,13 @@ function orderMoves(moves: Move[]): Move[] {
       return a.isPromotion ? -1 : 1;
     }
 
-    // Move to center squares
+    // Center squares
     const aCenter = isCenterSquare(a.to.r, a.to.c) ? 1 : 0;
     const bCenter = isCenterSquare(b.to.r, b.to.c) ? 1 : 0;
     return bCenter - aCenter;
   });
 }
 
-/**
- * Simple in-memory Transposition Table for current search
- */
 interface TTEntry {
   depth: number;
   score: number;
@@ -183,13 +189,12 @@ interface TTEntry {
 
 const transpositionTable = new Map<string, TTEntry>();
 
-/** Clear transposition table between independent game evaluations */
 export function resetTranspositionTable(): void {
   transpositionTable.clear();
 }
 
 /**
- * Quiescence search to avoid the horizon effect on capture sequences
+ * Quiescence search to prevent horizon effect on capture chains
  */
 function quiescence(
   state: GameState,
@@ -208,7 +213,6 @@ function quiescence(
   if (alpha < standPat) alpha = standPat;
 
   const legalMoves = getLegalMoves(state);
-  // Only evaluate captures in quiescence
   const captureMoves = legalMoves.filter((m) => m.capturedPositions.length > 0);
   if (captureMoves.length === 0) return standPat;
 
@@ -246,7 +250,7 @@ function alphaBeta(
 
   if (depth === 0) {
     if (useQuiescence) {
-      return { score: quiescence(state, alpha, beta, aiColor, 3, deadline) };
+      return { score: quiescence(state, alpha, beta, aiColor, 4, deadline) };
     }
     return { score: evaluatePosition(state, aiColor) };
   }
@@ -265,7 +269,11 @@ function alphaBeta(
     return { score: evaluatePosition(state, aiColor) };
   }
 
-  const ordered = orderMoves(legalMoves);
+  // Mandatory capture rule enforcement: If captures exist, MUST evaluate captures!
+  const captureMoves = legalMoves.filter((m) => m.capturedPositions.length > 0);
+  const candidateMoves = captureMoves.length > 0 ? captureMoves : legalMoves;
+
+  const ordered = orderMoves(candidateMoves);
   let bestMove: Move = ordered[0];
   let maxScore = -Infinity;
   const originalAlpha = alpha;
@@ -289,7 +297,6 @@ function alphaBeta(
     }
   }
 
-  // Store in TT
   let flag: 'exact' | 'lower' | 'upper' = 'exact';
   if (maxScore <= originalAlpha) flag = 'upper';
   else if (maxScore >= beta) flag = 'lower';
@@ -312,35 +319,38 @@ export interface AiSearchResult {
 }
 
 /**
- * Master search routine: Iterative Deepening Minimax
+ * Master search routine: Iterative Deepening Minimax with Absolute Capture Enforcement
  */
 export function findBestMove(
   state: GameState,
   difficulty: AiDifficulty = 'medium'
-): AiSearchResult {
-  const cfg = DIFFICULTY_PRESETS[difficulty];
+): AiSearchResult | null {
+  const legalMoves = getLegalMoves(state);
+  if (legalMoves.length === 0) {
+    return null;
+  }
+
+  // Ethiopian Dama Rule: If any piece can capture an opponent piece, AI MUST ALWAYS CAPTURE!
+  const captureMoves = legalMoves.filter((m) => m.capturedPositions.length > 0);
+  const movesToConsider = captureMoves.length > 0 ? captureMoves : legalMoves;
+
+  const cfg = DIFFICULTY_PRESETS[difficulty] || DIFFICULTY_PRESETS.medium;
   const startTime = Date.now();
   const deadline = startTime + cfg.timeLimitMs;
 
-  const legalMoves = getLegalMoves(state);
-  if (legalMoves.length === 0) {
-    throw new Error('No legal moves available for AI');
-  }
-
-  // If only one legal move (e.g. single mandatory capture), return immediately!
-  if (legalMoves.length === 1) {
+  // If only one candidate move, return immediately!
+  if (movesToConsider.length === 1) {
     return {
-      move: legalMoves[0],
+      move: movesToConsider[0],
       depthReached: 1,
       score: evaluatePosition(state, state.turn),
       timeTakenMs: Date.now() - startTime,
     };
   }
 
-  // Beginner / Easy randomness jitter
+  // Beginner randomness jitter (only amongst safe moves, but still captures if possible)
   if (cfg.randomness > 0 && Math.random() < cfg.randomness) {
-    // Pick among top 3 or random legal move
-    const ordered = orderMoves(legalMoves);
+    const ordered = orderMoves(movesToConsider);
     const pickRange = Math.min(3, ordered.length);
     const randomPick = ordered[Math.floor(Math.random() * pickRange)];
     return {
@@ -351,13 +361,12 @@ export function findBestMove(
     };
   }
 
-  let overallBestMove = legalMoves[0];
+  let overallBestMove = movesToConsider[0];
   let overallScore = 0;
   let maxDepthReached = 1;
 
   resetTranspositionTable();
 
-  // Iterative deepening from depth 1 up to cfg.maxDepth
   for (let currentDepth = 1; currentDepth <= cfg.maxDepth; currentDepth++) {
     if (Date.now() > deadline && currentDepth > 1) {
       break;
@@ -374,9 +383,20 @@ export function findBestMove(
     );
 
     if (bestMove) {
-      overallBestMove = bestMove;
-      overallScore = score;
-      maxDepthReached = currentDepth;
+      // Ensure bestMove belongs to candidate moves
+      const isValidCandidate = movesToConsider.some(
+        (m) =>
+          m.from.r === bestMove.from.r &&
+          m.from.c === bestMove.from.c &&
+          m.to.r === bestMove.to.r &&
+          m.to.c === bestMove.to.c
+      );
+
+      if (isValidCandidate) {
+        overallBestMove = bestMove;
+        overallScore = score;
+        maxDepthReached = currentDepth;
+      }
     }
 
     if (Date.now() > deadline) break;
@@ -391,25 +411,37 @@ export function findBestMove(
 }
 
 /**
- * Async wrapper that yields to event loop so browser UI never freezes
+ * Async wrapper that yields to event loop with failsafe error handling so UI never locks up
  */
 export async function getAiMoveAsync(
   state: GameState,
   difficulty: AiDifficulty = 'medium'
-): Promise<AiSearchResult> {
-  // Add a minimum aesthetic thinking delay (400ms) for human comfort
-  const minDelay = 400;
+): Promise<AiSearchResult | null> {
+  const minDelay = 100;
   const start = Date.now();
 
   return new Promise((resolve) => {
     setTimeout(() => {
-      const result = findBestMove(state, difficulty);
-      const elapsed = Date.now() - start;
-      const remainingDelay = Math.max(0, minDelay - elapsed);
-
-      setTimeout(() => {
-        resolve(result);
-      }, remainingDelay);
-    }, 20);
+      try {
+        const result = findBestMove(state, difficulty);
+        const elapsed = Date.now() - start;
+        const remainingDelay = Math.max(0, minDelay - elapsed);
+        setTimeout(() => resolve(result), remainingDelay);
+      } catch (err) {
+        console.error('Error in AI calculation:', err);
+        const legal = getLegalMoves(state);
+        if (legal.length > 0) {
+          const captures = legal.filter((m) => m.capturedPositions.length > 0);
+          resolve({
+            move: captures.length > 0 ? captures[0] : legal[0],
+            depthReached: 1,
+            score: 0,
+            timeTakenMs: 0,
+          });
+        } else {
+          resolve(null);
+        }
+      }
+    }, 15);
   });
 }

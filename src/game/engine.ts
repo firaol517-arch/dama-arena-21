@@ -435,7 +435,7 @@ export function getLegalMoves(state: GameState): Move[] {
     return allCaptures;
   }
 
-  return allQuiets;
+  return [...allCaptures, ...allQuiets];
 }
 
 /**

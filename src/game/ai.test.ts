@@ -46,10 +46,11 @@ test('AI executes mandatory capture when faced with choice', () => {
     turn: 'black',
   };
 
-  const { move } = findBestMove(state, 'medium');
-  assert.equal(move.capturedPositions.length, 1, 'AI makes mandatory capture');
-  assert.equal(move.to.r, 6);
-  assert.equal(move.to.c, 5);
+  const result = findBestMove(state, 'medium');
+  assert.ok(result, 'AI must find move when captures available');
+  assert.equal(result.move.capturedPositions.length, 1, 'AI makes mandatory capture');
+  assert.equal(result.move.to.r, 6);
+  assert.equal(result.move.to.c, 5);
 });
 
 test('AI responds quickly within time limit', () => {
@@ -58,6 +59,7 @@ test('AI responds quickly within time limit', () => {
   const result = findBestMove(state, 'easy');
   const elapsed = Date.now() - start;
 
+  assert.ok(result, 'AI returns search result');
   assert.ok(result.move, 'AI returns valid move');
   assert.ok(elapsed < 1000, `AI searched within budget, took ${elapsed}ms`);
 });
