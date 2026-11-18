@@ -18,6 +18,9 @@ interface GameHUDProps {
   isAiThinking: boolean;
   whiteTimer: number; // in seconds
   blackTimer: number; // in seconds
+  roomId?: string | null;
+  waitingForOpponent?: boolean;
+  opponentConnected?: boolean;
   onUndo: () => void;
   canUndo: boolean;
   onRestart: () => void;
@@ -37,6 +40,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   isAiThinking,
   whiteTimer,
   blackTimer,
+  roomId,
+  waitingForOpponent,
+  opponentConnected = true,
   onUndo,
   canUndo,
   onRestart,
@@ -73,9 +79,29 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   const isWhiteTurn = state.turn === 'white';
   const isBlackTurn = state.turn === 'black';
+  const isOnlineMatch = gameMode === 'friend' || gameMode === 'multiplayer';
 
   return (
     <div className="w-full max-w-[560px] mx-auto flex flex-col gap-2.5 mb-2">
+      {/* Live Online Room Status Banner */}
+      {isOnlineMatch && roomId && (
+        <div className="px-3 py-1.5 rounded-xl bg-blue-950/50 border border-blue-500/30 flex items-center justify-between text-[11px]">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${waitingForOpponent ? 'bg-amber-400 animate-ping' : opponentConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400 animate-pulse'}`} />
+            <span className="font-mono font-bold text-blue-300">Room: {roomId}</span>
+          </div>
+          <span className="font-semibold text-slate-300">
+            {waitingForOpponent
+              ? '⏳ ተጋጣሚ እየተጠበቀ ነው...'
+              : opponentConnected
+              ? state.turn === playerColor
+                ? '🟢 የእርስዎ ተራ (Your Turn)'
+                : '🟡 የተጋጣሚ ተራ (Opponent Turn)'
+              : '🔄 ተጋጣሚ እየተመለሰ ነው...'}
+          </span>
+        </div>
+      )}
+
       {/* Player Cards Header */}
       <div className="grid grid-cols-2 gap-2 sm:gap-3">
         {/* Black Player Card */}
@@ -100,6 +126,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   <span className="text-xs sm:text-sm font-bold text-slate-200 truncate max-w-[100px]">
                     {blackName}
                   </span>
+                  {gameMode !== 'local' && playerColor === 'black' && (
+                    <span className="text-[9px] uppercase px-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+                      You
+                    </span>
+                  )}
                   {gameMode === 'ai' && aiDifficulty && (
                     <span className="text-[9px] uppercase px-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
                       {aiDifficulty}
@@ -205,15 +236,17 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </button>
           )}
 
-          <button
-            onClick={onRestart}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-300 border border-slate-700/60 text-xs font-semibold flex items-center gap-1 transition-all active:scale-95"
-            aria-label="Restart match"
-            title="Restart match"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">Restart</span>
-          </button>
+          {!isOnlineMatch && (
+            <button
+              onClick={onRestart}
+              className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-300 border border-slate-700/60 text-xs font-semibold flex items-center gap-1 transition-all active:scale-95"
+              aria-label="Restart match"
+              title="Restart match"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Restart</span>
+            </button>
+          )}
 
           <button
             onClick={onFlipBoard}

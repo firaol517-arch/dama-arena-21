@@ -4,8 +4,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, Copy, Check, Send, Users, Globe, PlusCircle, RefreshCw, KeyRound, Sparkles, ArrowRight } from 'lucide-react';
-import { PlayerProfile } from '../game/types';
+import { X, Copy, Check, Send, Users, Globe, PlusCircle, RefreshCw, KeyRound, ArrowRight, LogOut } from 'lucide-react';
+import { GameConfig, PlayerProfile } from '../game/types';
+import { openTelegramShareLink } from '../utils/telegram';
 
 interface OpenRoomInfo {
   id: string;
@@ -20,20 +21,26 @@ interface FriendRoomModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentUser: PlayerProfile;
+  gameConfig: GameConfig;
   currentRoomId: string | null;
   waitingForOpponent: boolean;
+  prefillCode?: string | null;
   onRoomCreated: (roomId: string, state: any, color: 'white') => void;
-  onRoomJoined: (roomId: string, state: any, color: 'black', opponentName: string) => void;
+  onRoomJoined: (roomId: string, state: any, color: 'white' | 'black', opponentName: string) => void;
+  onLeaveRoom: () => void;
 }
 
 export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
   isOpen,
   onClose,
   currentUser,
+  gameConfig,
   currentRoomId,
   waitingForOpponent,
+  prefillCode,
   onRoomCreated,
   onRoomJoined,
+  onLeaveRoom,
 }) => {
   const [activeTab, setActiveTab] = useState<'lobby' | 'create' | 'join'>('lobby');
   const [inputCode, setInputCode] = useState('');
@@ -48,7 +55,6 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
   const fetchOpenRooms = async () => {
     try {
       setLoadingRooms(true);
-      setErrorMsg(null);
       const res = await fetch('/api/rooms');
       if (res.ok) {
         const data = await res.json();
@@ -64,14 +70,23 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       fetchOpenRooms();
-      const interval = setInterval(fetchOpenRooms, 4000);
+      const interval = setInterval(fetchOpenRooms, 3000);
       return () => clearInterval(interval);
     }
   }, [isOpen]);
 
+  // Pre-fill deep-linked join code
+  useEffect(() => {
+    if (isOpen && prefillCode) {
+      setActiveTab('join');
+      setInputCode(prefillCode.toUpperCase());
+      setErrorMsg(null);
+    }
+  }, [isOpen, prefillCode]);
+
   if (!isOpen) return null;
 
-  // Direct REST Room Creation (100% Reliable!)
+  // Direct REST Room Creation
   const handleCreateRoom = async (isPrivate: boolean = false) => {
     try {
       setCreating(true);
@@ -82,6 +97,7 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
         body: JSON.stringify({
           userId: currentUser.id,
           displayName: currentUser.displayName,
+          config: gameConfig,
           isPrivate,
           timerMinutes: 10,
         }),
@@ -101,7 +117,7 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
     }
   };
 
-  // Direct REST Room Join (100% Reliable!)
+  // Direct REST Room Join
   const handleJoinRoom = async (codeToJoin: string) => {
     const cleanCode = codeToJoin.trim().toUpperCase();
     if (!cleanCode) return;
@@ -134,17 +150,37 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
   };
 
   const shareTelegramLink = (code: string) => {
-    const directUrl = `${window.location.origin}?room=${code}`;
     const botUrl = `https://t.me/Letsdamabot?startapp=join_${code}`;
-    const tgText = encodeURIComponent(`⚔️ ከእኔ ጋር የኢትዮጵያ ዳማ ይጫወቱ! (Challenge me on Dama Arena!)\nክፍል ኮድ (Room Code): ${code}\nወዲያውኑ ለመጫወት ሊንኩን ይጫኑ፦\n${botUrl}`);
-    window.open(`https://t.me/share/url?url=${encodeURIComponent(botUrl)}&text=${tgText}`, '_blank');
+    const tgText = encodeURIComponent(
+      `⚔️ ከእኔ ጋር የኢትዮጵያ ዳማ ይጫወቱ! (Challenge me on Dama Arena!)\nክፍል ኮድ (Room Code): ${code}\nወዲያውኑ ለመጫወት ሊንኩን ይጫኑ፦`
+    );
+    openTelegramShareLink(`https://t.me/share/url?url=${encodeURIComponent(botUrl)}&text=${tgText}`);
   };
 
-  const copyCode = (code: string) => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const copyCode = async (code: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        throw new Error('Clipboard unavailable');
+      }
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = code;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        // ignore
+      }
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -170,6 +206,7 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
           </div>
           <button
             onClick={onClose}
+            aria-label="Close rooms modal"
             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
           >
             <X className="w-5 h-5" />
@@ -228,7 +265,7 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
           </button>
         </div>
 
-        {/* Tab 1: Live Lobby (The "Lela Way") */}
+        {/* Tab 1: Live Lobby */}
         {activeTab === 'lobby' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             <div className="flex items-center justify-between text-xs text-slate-400 pb-1">
@@ -263,36 +300,50 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
               </div>
             ) : (
               <div className="space-y-2">
-                {openRooms.map((r) => (
-                  <div
-                    key={r.id}
-                    className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-blue-500/50 transition-all flex items-center justify-between gap-3 shadow"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-400 text-white font-black text-sm flex items-center justify-center shadow">
-                        {r.hostName.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-xs sm:text-sm text-slate-100">{r.hostName}</span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/30">
-                            {r.id}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-slate-400">ባለ 4 ዳማ (8x8) • {r.timerMinutes} ደቂቃ ሰዓት</p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => handleJoinRoom(r.id)}
-                      disabled={joining}
-                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs flex items-center gap-1 shadow transition-all active:scale-95 shrink-0"
+                {openRooms.map((r) => {
+                  const isMyRoom = r.hostId === currentUser.id || r.id === currentRoomId;
+                  return (
+                    <div
+                      key={r.id}
+                      className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-blue-500/50 transition-all flex items-center justify-between gap-3 shadow"
                     >
-                      <span>ተቀላቀል | Join</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-400 text-white font-black text-sm flex items-center justify-center shadow">
+                          {r.hostName.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-xs sm:text-sm text-slate-100">{r.hostName}</span>
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                              {r.id}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400">
+                            {r.boardSize === 10 ? '10x10 ዳማ' : 'ባለ 4 ዳማ (8x8)'} • {r.timerMinutes} ደቂቃ ሰዓት
+                          </p>
+                        </div>
+                      </div>
+
+                      {isMyRoom ? (
+                        <button
+                          onClick={() => setActiveTab('create')}
+                          className="px-3 py-2 rounded-xl bg-blue-500/20 text-blue-300 border border-blue-500/40 font-bold text-xs shrink-0"
+                        >
+                          የእርስዎ ክፍል (View)
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleJoinRoom(r.id)}
+                          disabled={joining}
+                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs flex items-center gap-1 shadow transition-all active:scale-95 shrink-0"
+                        >
+                          <span>ተቀላቀል | Join</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -336,6 +387,14 @@ export const FriendRoomModal: React.FC<FriendRoomModalProps> = ({
                   >
                     {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                     <span>{copied ? 'ኮዱ ኮፒ ተደርጓል! (Code Copied)' : 'ኮዱን ኮፒ አድርግ (Copy Room Code)'}</span>
+                  </button>
+
+                  <button
+                    onClick={onLeaveRoom}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-900 hover:bg-red-950/50 text-slate-400 hover:text-red-300 border border-slate-800 hover:border-red-800/40 font-semibold text-xs flex items-center justify-center gap-1.5 transition-all"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>ከዚህ ክፍል ውጣ / አዲስ ፍጠር (Leave / Create New)</span>
                   </button>
                 </div>
               </div>

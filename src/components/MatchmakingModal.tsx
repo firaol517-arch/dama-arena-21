@@ -4,14 +4,23 @@
  */
 
 import React from 'react';
-import { Globe, X, Loader2 } from 'lucide-react';
+import { Globe, Users } from 'lucide-react';
 
 interface MatchmakingModalProps {
   isOpen: boolean;
+  queueSize?: number;
+  openRoomsCount?: number;
   onCancel: () => void;
+  onSwitchToRooms: () => void;
 }
 
-export const MatchmakingModal: React.FC<MatchmakingModalProps> = ({ isOpen, onCancel }) => {
+export const MatchmakingModal: React.FC<MatchmakingModalProps> = ({
+  isOpen,
+  queueSize = 1,
+  openRoomsCount = 0,
+  onCancel,
+  onSwitchToRooms,
+}) => {
   if (!isOpen) return null;
 
   return (
@@ -32,16 +41,34 @@ export const MatchmakingModal: React.FC<MatchmakingModalProps> = ({ isOpen, onCa
             FINDING AN OPPONENT...
           </h3>
           <p className="text-xs text-slate-400 mt-1">
-            Searching for active players in the global arena.
+            ተጋጣሚ እየተፈለገ ነው... በቅርቡ ይገናኛሉ።
           </p>
+          <div className="mt-3 flex items-center justify-center gap-2 text-[11px] font-mono">
+            <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              Waiting: {Math.max(1, queueSize)}
+            </span>
+            <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30">
+              Open Rooms: {openRoomsCount}
+            </span>
+          </div>
         </div>
 
-        <button
-          onClick={onCancel}
-          className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all active:scale-95"
-        >
-          Cancel Matchmaking
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={onSwitchToRooms}
+            className="w-full py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-blue-900/30"
+          >
+            <Users className="w-4 h-4" />
+            <span>ክፍት ክፍሎችን እይ / ክፍል ፍጠር (Live Rooms)</span>
+          </button>
+
+          <button
+            onClick={onCancel}
+            className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all active:scale-95"
+          >
+            Cancel Matchmaking
+          </button>
+        </div>
       </div>
     </div>
   );

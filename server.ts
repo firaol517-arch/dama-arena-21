@@ -204,6 +204,7 @@ interface StoredData {
     totalTurns: number;
     playedAt: number;
     difficulty?: string;
+    dedupKey?: string;
   }>;
   tournaments: Tournament[];
 }
@@ -360,7 +361,7 @@ function verifyTelegramInitData(initDataStr: string, botToken: string): { isVali
 
 // REST API ROUTES
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: Date.now(), uptime: process.uptime() });
+  res.json({ status: 'ok', time: Date.now(), uptime: process.uptime(), publicUrl: APP_URL });
 });
 
 // Profile endpoints
@@ -423,7 +424,10 @@ app.get('/api/matches', (req, res) => {
 });
 
 app.post('/api/matches/record', (req, res) => {
-  const { mode, whitePlayer, blackPlayer, winner, reason, totalTurns, difficulty } = req.body;
+  const { mode, whitePlayer, blackPlayer, whitePlayerId, blackPlayerId, winner, reason, totalTurns, difficulty, dedupKey } = req.body;
+  if (dedupKey && store.matches.some((m) => m.dedupKey === dedupKey)) {
+    return res.json({ success: true, duplicate: true });
+  }
   const matchId = `match_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
   const matchRecord = {
@@ -436,12 +440,14 @@ app.post('/api/matches/record', (req, res) => {
     totalTurns: totalTurns || 1,
     playedAt: Date.now(),
     difficulty,
+    dedupKey,
   };
 
   store.matches.push(matchRecord);
 
   // Update player profile stats if recorded for registered user
-  const updatePlayerStats = (playerId: string, isWinner: boolean, isDraw: boolean) => {
+  const updatePlayerStats = (playerId: string | undefined, isWinner: boolean, isDraw: boolean) => {
+    if (!playerId) return;
     const user = store.users[playerId];
     if (user) {
       user.matchesPlayed++;
@@ -473,15 +479,15 @@ app.post('/api/matches/record', (req, res) => {
 
   if (winner) {
     if (winner === 'white') {
-      updatePlayerStats(whitePlayer, true, false);
-      updatePlayerStats(blackPlayer, false, false);
+      updatePlayerStats(whitePlayerId || whitePlayer, true, false);
+      updatePlayerStats(blackPlayerId || blackPlayer, false, false);
     } else {
-      updatePlayerStats(whitePlayer, false, false);
-      updatePlayerStats(blackPlayer, true, false);
+      updatePlayerStats(whitePlayerId || whitePlayer, false, false);
+      updatePlayerStats(blackPlayerId || blackPlayer, true, false);
     }
   } else {
-    updatePlayerStats(whitePlayer, false, true);
-    updatePlayerStats(blackPlayer, false, true);
+    updatePlayerStats(whitePlayerId || whitePlayer, false, true);
+    updatePlayerStats(blackPlayerId || blackPlayer, false, true);
   }
 
   saveData(store);
@@ -534,10 +540,50 @@ app.post('/api/tournaments/:id/join', (req, res) => {
   res.json({ success: true, message: 'በውድድሩ ላይ በተሳካ ሁኔታ ተመዝግበዋል!', tournament });
 });
 
-// --- BULLETPROOF MULTIPLAYER ROOMS REST API ---
-app.get('/api/rooms', (req, res) => {
+app.post('/api/tournaments/:id/matches/:matchId/result', (req, res) => {
+  const { id, matchId } = req.params;
+  const { winnerId, winnerName, winnerElo } = req.body;
+  if (!store.tournaments) store.tournaments = [...SEED_TOURNAMENTS];
+  const tournament = store.tournaments.find((t) => t.id === id);
+  if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+
+  const match = tournament.matches.find((m) => m.id === matchId);
+  if (!match) return res.status(404).json({ error: 'Match not found' });
+
+  match.winnerId = winnerId;
+  match.status = 'finished';
+
+  // Advance winner to next round if an open slot exists
+  const nextRoundMatch = tournament.matches.find(
+    (m) => m.round === match.round + 1 && (!m.player1 || !m.player2)
+  );
+  if (nextRoundMatch && winnerId) {
+    const winnerObj = {
+      id: winnerId,
+      name: winnerName || 'Champion',
+      elo: winnerElo || 1200,
+    };
+    if (!nextRoundMatch.player1) {
+      nextRoundMatch.player1 = winnerObj;
+    } else if (!nextRoundMatch.player2 && nextRoundMatch.player1.id !== winnerId) {
+      nextRoundMatch.player2 = winnerObj;
+    }
+  }
+
+  saveData(store);
+  res.json({ success: true, tournament });
+});
+
+// --- BULLETPROOF MULTIPLAYER ROOMS & MATCHMAKING REST API ---
+function getOpenRoomsList() {
   const openRooms: any[] = [];
+  const now = Date.now();
   rooms.forEach((r) => {
+    // Prune stale empty rooms older than 2 hours
+    if (now - r.createdAt > 2 * 60 * 60 * 1000 && !r.black) {
+      rooms.delete(r.id);
+      return;
+    }
     if (!r.isPrivate && !r.black && r.state.status === 'playing') {
       openRooms.push({
         id: r.id,
@@ -549,19 +595,238 @@ app.get('/api/rooms', (req, res) => {
       });
     }
   });
-  res.json(openRooms.reverse());
+  return openRooms.reverse();
+}
+
+function attachActiveSocketToRoom(room: MatchRoom, userId: string) {
+  const sock = activeSocketsByUserId.get(userId);
+  if (!sock || sock.readyState !== WebSocket.OPEN) return;
+  if (room.white?.userId === userId) {
+    room.white.ws = sock;
+    socketRoomMap.set(sock, room.id);
+  } else if (room.black?.userId === userId) {
+    room.black.ws = sock;
+    socketRoomMap.set(sock, room.id);
+  }
+}
+
+function syncRoomTimers(room: MatchRoom) {
+  if (!room.black || room.state.status !== 'playing') {
+    room.lastTimerTick = Date.now();
+    return;
+  }
+  const now = Date.now();
+  const elapsed = Math.max(0, now - room.lastTimerTick);
+  room.lastTimerTick = now;
+  if (room.state.turn === 'white') {
+    room.whiteTimerMs = Math.max(0, room.whiteTimerMs - elapsed);
+  } else {
+    room.blackTimerMs = Math.max(0, room.blackTimerMs - elapsed);
+  }
+}
+
+function processRoomMove(
+  room: MatchRoom,
+  userId: string | undefined,
+  move: Move,
+  expectedMoveCount?: number
+): { ok: boolean; duplicate?: boolean; state?: GameState; error?: string } {
+  if (!move) return { ok: false, error: 'No move provided' };
+
+  // Idempotent guard against duplicate REST + WS submissions
+  if (typeof expectedMoveCount === 'number' && expectedMoveCount < room.state.moveHistory.length) {
+    return { ok: true, duplicate: true, state: room.state };
+  }
+
+  if (room.state.status !== 'playing') {
+    return { ok: false, error: 'Match has already ended' };
+  }
+
+  if (userId) {
+    const movingPlayerColor =
+      room.white?.userId === userId
+        ? 'white'
+        : room.black?.userId === userId
+        ? 'black'
+        : null;
+    if (!movingPlayerColor || room.state.turn !== movingPlayerColor) {
+      return { ok: false, error: 'Not your turn' };
+    }
+  }
+
+  const legalMoves = getLegalMoves(room.state);
+  const canonicalServerMove = legalMoves.find(
+    (m) =>
+      m.from.r === move.from.r &&
+      m.from.c === move.from.c &&
+      m.to.r === move.to.r &&
+      m.to.c === move.to.c &&
+      m.capturedPositions.length === move.capturedPositions.length &&
+      m.capturedPositions.every((cp) =>
+        move.capturedPositions.some((mp) => mp.r === cp.r && mp.c === cp.c)
+      )
+  );
+
+  if (!canonicalServerMove) {
+    return { ok: false, error: 'Illegal move rejected by server engine' };
+  }
+
+  syncRoomTimers(room);
+  const nextState = applyMove(room.state, canonicalServerMove);
+  room.state = nextState;
+  room.lastTimerTick = Date.now();
+
+  broadcastToRoom(room, {
+    type: 'MOVE_APPLIED',
+    move: canonicalServerMove,
+    state: nextState,
+    whiteTimerMs: room.whiteTimerMs,
+    blackTimerMs: room.blackTimerMs,
+  });
+
+  if (nextState.status !== 'playing') {
+    broadcastToRoom(room, {
+      type: 'GAME_OVER',
+      status: nextState.status,
+      winner: nextState.winner,
+      reason: nextState.statusReason,
+    });
+  }
+
+  return { ok: true, state: nextState };
+}
+
+function handleFindMatch(userId: string, displayName: string, ws?: WebSocket, config?: Partial<GameConfig>) {
+  const existingPending = pendingMatchByUser.get(userId);
+  if (existingPending) {
+    pendingMatchByUser.delete(userId);
+    return { matched: true, ...existingPending };
+  }
+
+  const now = Date.now();
+  // Keep active queue entries (either open WS or seen within 25s via REST polling)
+  matchmakingQueue = matchmakingQueue.filter(
+    (p) =>
+      p.userId !== userId &&
+      ((p.ws && p.ws.readyState === WebSocket.OPEN) || now - (p.lastSeen || 0) < 25000)
+  );
+
+  if (matchmakingQueue.length > 0) {
+    const opponent = matchmakingQueue.shift()!;
+    const roomId = 'MM' + Math.floor(1000 + Math.random() * 9000);
+    const state = createNewGame(config || {});
+
+    const clientSock = ws || activeSocketsByUserId.get(userId);
+    const oppSock = opponent.ws && opponent.ws.readyState === WebSocket.OPEN ? opponent.ws : activeSocketsByUserId.get(opponent.userId);
+
+    const isClientWhite = Math.random() > 0.5;
+    const whitePlayer: PlayerClient = isClientWhite
+      ? { userId, displayName, ws: clientSock, color: 'white' }
+      : { userId: opponent.userId, displayName: opponent.displayName, ws: oppSock, color: 'white' };
+    const blackPlayer: PlayerClient = isClientWhite
+      ? { userId: opponent.userId, displayName: opponent.displayName, ws: oppSock, color: 'black' }
+      : { userId, displayName, ws: clientSock, color: 'black' };
+
+    const room: MatchRoom = {
+      id: roomId,
+      createdAt: Date.now(),
+      config: state.config,
+      white: whitePlayer,
+      black: blackPlayer,
+      spectators: [],
+      state,
+      isPrivate: false,
+      whiteTimerMs: 10 * 60 * 1000,
+      blackTimerMs: 10 * 60 * 1000,
+      lastTimerTick: Date.now(),
+    };
+
+    rooms.set(roomId, room);
+    if (whitePlayer.ws) socketRoomMap.set(whitePlayer.ws, roomId);
+    if (blackPlayer.ws) socketRoomMap.set(blackPlayer.ws, roomId);
+
+    const whitePayload = {
+      type: 'MATCH_FOUND',
+      roomId,
+      color: 'white' as PieceColor,
+      opponentName: blackPlayer.displayName,
+      state: room.state,
+    };
+    const blackPayload = {
+      type: 'MATCH_FOUND',
+      roomId,
+      color: 'black' as PieceColor,
+      opponentName: whitePlayer.displayName,
+      state: room.state,
+    };
+
+    if (whitePlayer.ws && whitePlayer.ws.readyState === WebSocket.OPEN) {
+      try { whitePlayer.ws.send(JSON.stringify(whitePayload)); } catch (_) {}
+    }
+    if (blackPlayer.ws && blackPlayer.ws.readyState === WebSocket.OPEN) {
+      try { blackPlayer.ws.send(JSON.stringify(blackPayload)); } catch (_) {}
+    }
+
+    // Store for REST polling fallback for opponent (and self)
+    if (isClientWhite) {
+      pendingMatchByUser.set(opponent.userId, {
+        roomId,
+        color: 'black',
+        opponentName: whitePlayer.displayName,
+        state: room.state,
+      });
+      return {
+        matched: true,
+        roomId,
+        color: 'white' as PieceColor,
+        opponentName: blackPlayer.displayName,
+        state: room.state,
+      };
+    } else {
+      pendingMatchByUser.set(opponent.userId, {
+        roomId,
+        color: 'white',
+        opponentName: blackPlayer.displayName,
+        state: room.state,
+      });
+      return {
+        matched: true,
+        roomId,
+        color: 'black' as PieceColor,
+        opponentName: whitePlayer.displayName,
+        state: room.state,
+      };
+    }
+  } else {
+    const clientSock = ws || activeSocketsByUserId.get(userId);
+    matchmakingQueue.push({
+      userId,
+      displayName,
+      ws: clientSock,
+      lastSeen: now,
+    });
+    return {
+      matched: false,
+      queueSize: matchmakingQueue.length,
+    };
+  }
+}
+
+app.get('/api/rooms', (req, res) => {
+  res.json(getOpenRoomsList());
 });
 
 app.post('/api/rooms/create', (req, res) => {
   const { userId, displayName, config, isPrivate, timerMinutes } = req.body;
   const roomId = 'DM' + Math.floor(1000 + Math.random() * 9000);
   const state = createNewGame(config || {});
+  const hostId = userId || `host_${Date.now()}`;
 
   const room: MatchRoom = {
     id: roomId,
     createdAt: Date.now(),
     config: state.config,
-    white: { userId: userId || 'host', displayName: displayName || 'Host', color: 'white' },
+    white: { userId: hostId, displayName: displayName || 'Host', color: 'white' },
     spectators: [],
     state,
     isPrivate: Boolean(isPrivate),
@@ -570,6 +835,7 @@ app.post('/api/rooms/create', (req, res) => {
     lastTimerTick: Date.now(),
   };
 
+  attachActiveSocketToRoom(room, hostId);
   rooms.set(roomId, room);
   res.json({ success: true, roomId, state, color: 'white' });
 });
@@ -583,24 +849,41 @@ app.post('/api/rooms/join', (req, res) => {
     return res.status(404).json({ success: false, error: 'የተሳሳተ ኮድ፤ ክፍሉ አልተገኘም (Room code not found)' });
   }
 
+  if (room.white?.userId === userId) {
+    attachActiveSocketToRoom(room, userId);
+    return res.json({
+      success: true,
+      roomId: room.id,
+      color: 'white',
+      opponentName: room.black?.displayName || 'Waiting...',
+      state: room.state,
+    });
+  }
+
   if (room.black && room.black.userId !== userId) {
     return res.status(400).json({ success: false, error: 'ክፍሉ ሙሉ ነው፤ ሌላ ተጫዋች ገብቷል (Room is already full)' });
   }
 
   if (!room.black) {
     room.black = { userId, displayName: displayName || 'Challenger', color: 'black' };
+    room.spectators = room.spectators.filter((s) => s.userId !== userId);
+    room.lastTimerTick = Date.now();
+    attachActiveSocketToRoom(room, userId);
+
     broadcastToRoom(room, {
       type: 'OPPONENT_JOINED',
       opponentName: displayName || 'Challenger',
       state: room.state,
     });
+  } else {
+    attachActiveSocketToRoom(room, userId);
   }
 
   res.json({
     success: true,
     roomId: room.id,
-    color: room.white?.userId === userId ? 'white' : 'black',
-    opponentName: room.white?.userId === userId ? room.black?.displayName : room.white?.displayName,
+    color: 'black',
+    opponentName: room.white?.displayName || 'Host',
     state: room.state,
   });
 });
@@ -608,12 +891,26 @@ app.post('/api/rooms/join', (req, res) => {
 app.get('/api/rooms/:id/state', (req, res) => {
   const room = rooms.get(req.params.id.toUpperCase());
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+  const myColor = userId
+    ? room.white?.userId === userId
+      ? 'white'
+      : room.black?.userId === userId
+      ? 'black'
+      : undefined
+    : undefined;
+
   res.json({
     id: room.id,
     state: room.state,
+    whiteId: room.white?.userId,
+    blackId: room.black?.userId,
     whiteName: room.white?.displayName,
     blackName: room.black?.displayName,
+    myColor,
     hasOpponent: Boolean(room.black),
+    whiteTimerMs: room.whiteTimerMs,
+    blackTimerMs: room.blackTimerMs,
     spotifyUri: room.spotifyUri,
     spotifyTitle: room.spotifyTitle,
   });
@@ -636,29 +933,129 @@ app.post('/api/rooms/:id/spotify', (req, res) => {
 
 app.post('/api/rooms/:id/move', (req, res) => {
   const room = rooms.get(req.params.id.toUpperCase());
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  const { move } = req.body;
-  if (!move) return res.status(400).json({ error: 'No move provided' });
+  if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+  const { move, userId, expectedMoveCount } = req.body;
 
-  const nextState = applyMove(room.state, move);
-  room.state = nextState;
+  try {
+    const result = processRoomMove(room, userId, move, expectedMoveCount);
+    if (!result.ok) {
+      return res.status(400).json({ success: false, error: result.error, state: room.state });
+    }
+    res.json({ success: true, duplicate: result.duplicate, state: result.state });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err?.message || 'Move failed', state: room.state });
+  }
+});
 
-  broadcastToRoom(room, {
-    type: 'MOVE_APPLIED',
-    move,
-    state: nextState,
-  });
-
-  if (nextState.status !== 'playing') {
-    broadcastToRoom(room, {
-      type: 'GAME_OVER',
-      status: nextState.status,
-      winner: nextState.winner,
-      reason: nextState.statusReason,
-    });
+app.post('/api/rooms/:id/resign', (req, res) => {
+  const room = rooms.get(req.params.id.toUpperCase());
+  if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+  const { userId } = req.body;
+  if (room.state.status !== 'playing') {
+    return res.json({ success: true, state: room.state });
   }
 
-  res.json({ success: true, state: nextState });
+  const resigningColor: PieceColor =
+    room.white?.userId === userId
+      ? 'white'
+      : room.black?.userId === userId
+      ? 'black'
+      : room.state.turn;
+  const winner: PieceColor = resigningColor === 'white' ? 'black' : 'white';
+  const resignerName =
+    resigningColor === 'white' ? room.white?.displayName || 'White' : room.black?.displayName || 'Black';
+
+  room.state = {
+    ...room.state,
+    status: winner === 'white' ? 'white_won' : 'black_won',
+    winner,
+    statusReason: `${resignerName} (${resigningColor.toUpperCase()}) resigned the match.`,
+  };
+
+  broadcastToRoom(room, {
+    type: 'GAME_OVER',
+    status: room.state.status,
+    winner: room.state.winner,
+    reason: room.state.statusReason,
+    state: room.state,
+  });
+
+  res.json({ success: true, state: room.state });
+});
+
+app.post('/api/rooms/:id/rematch', (req, res) => {
+  const room = rooms.get(req.params.id.toUpperCase());
+  if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+  const { userId } = req.body;
+
+  const oldWhite = room.white;
+  const oldBlack = room.black;
+  if (oldWhite && oldBlack) {
+    room.white = { ...oldBlack, color: 'white' };
+    room.black = { ...oldWhite, color: 'black' };
+  }
+  room.state = createNewGame(room.config);
+  room.whiteTimerMs = 10 * 60 * 1000;
+  room.blackTimerMs = 10 * 60 * 1000;
+  room.lastTimerTick = Date.now();
+
+  broadcastToRoom(room, {
+    type: 'REMATCH_STARTED',
+    state: room.state,
+    whiteId: room.white?.userId,
+    blackId: room.black?.userId,
+    whiteName: room.white?.displayName,
+    blackName: room.black?.displayName,
+  });
+
+  const myColor: PieceColor = room.white?.userId === userId ? 'white' : 'black';
+  res.json({
+    success: true,
+    state: room.state,
+    color: myColor,
+    opponentName: myColor === 'white' ? room.black?.displayName : room.white?.displayName,
+  });
+});
+
+// Matchmaking REST endpoints (Unified with WebSocket matchmakingQueue)
+app.post('/api/matchmaking/find', (req, res) => {
+  const { userId, displayName, config } = req.body;
+  if (!userId) return res.status(400).json({ success: false, error: 'userId required' });
+  const result = handleFindMatch(userId, displayName || 'Warrior', undefined, config);
+  res.json({ success: true, ...result });
+});
+
+app.get('/api/matchmaking/status', (req, res) => {
+  const userId = String(req.query.userId || '');
+  if (!userId) return res.status(400).json({ matched: false });
+
+  const pending = pendingMatchByUser.get(userId);
+  if (pending) {
+    pendingMatchByUser.delete(userId);
+    return res.json({ matched: true, ...pending });
+  }
+
+  const now = Date.now();
+  const entry = matchmakingQueue.find((p) => p.userId === userId);
+  if (entry) {
+    entry.lastSeen = now;
+  }
+
+  const openRoomsCount = getOpenRoomsList().length;
+  res.json({
+    matched: false,
+    queueSize: matchmakingQueue.length,
+    openRoomsCount,
+  });
+});
+
+app.post('/api/matchmaking/cancel', (req, res) => {
+  const { userId } = req.body;
+  if (userId) {
+    matchmakingQueue = matchmakingQueue.filter((p) => p.userId !== userId);
+    pendingMatchByUser.delete(userId);
+  }
+  res.json({ success: true });
 });
 
 // TELEGRAM BOT WEBHOOK SIMULATOR & EXPORT INFO
@@ -684,6 +1081,7 @@ interface PlayerClient {
   userId: string;
   displayName: string;
   color?: PieceColor;
+  lastSeen?: number;
 }
 
 interface MatchRoom {
@@ -704,6 +1102,12 @@ interface MatchRoom {
 
 const rooms = new Map<string, MatchRoom>();
 let matchmakingQueue: PlayerClient[] = [];
+const activeSocketsByUserId = new Map<string, WebSocket>();
+const socketRoomMap = new WeakMap<WebSocket, string>();
+const pendingMatchByUser = new Map<
+  string,
+  { roomId: string; color: PieceColor; opponentName: string; state: GameState }
+>();
 
 const wss = new WebSocketServer({ noServer: true });
 
@@ -724,19 +1128,27 @@ function broadcastToRoom(room: MatchRoom, message: object) {
 
 wss.on('connection', (ws: WebSocket) => {
   let clientUser: PlayerClient | null = null;
-  let currentRoomId: string | null = null;
 
   ws.on('message', (data: string) => {
     try {
       const msg = JSON.parse(data.toString());
 
       switch (msg.type) {
+        case 'PING': {
+          ws.send(JSON.stringify({ type: 'PONG' }));
+          break;
+        }
+
         case 'INIT_CLIENT': {
+          const userId = msg.userId || `user_${Math.floor(Math.random() * 100000)}`;
+          const displayName = msg.displayName || 'Player';
           clientUser = {
             ws,
-            userId: msg.userId || `user_${Math.floor(Math.random() * 100000)}`,
-            displayName: msg.displayName || 'Player',
+            userId,
+            displayName,
+            lastSeen: Date.now(),
           };
+          activeSocketsByUserId.set(userId, ws);
           ws.send(JSON.stringify({ type: 'INIT_ACK', userId: clientUser.userId }));
           break;
         }
@@ -746,30 +1158,42 @@ wss.on('connection', (ws: WebSocket) => {
           const roomId = (msg.roomId || '').toUpperCase();
           const room = rooms.get(roomId);
           if (room) {
-            currentRoomId = roomId;
+            socketRoomMap.set(ws, roomId);
             if (room.white?.userId === clientUser.userId) {
               room.white.ws = ws;
             } else if (room.black?.userId === clientUser.userId) {
               room.black.ws = ws;
-            } else {
+            } else if (!room.spectators.some((s) => s.userId === clientUser!.userId)) {
               room.spectators.push({ ...clientUser, ws });
             }
             ws.send(JSON.stringify({
               type: 'ATTACH_ACK',
               roomId,
               state: room.state,
+              myColor: room.white?.userId === clientUser.userId ? 'white' : room.black?.userId === clientUser.userId ? 'black' : undefined,
+              hasOpponent: Boolean(room.black),
               whiteName: room.white?.displayName,
               blackName: room.black?.displayName,
+              whiteTimerMs: room.whiteTimerMs,
+              blackTimerMs: room.blackTimerMs,
               spotifyUri: room.spotifyUri,
               spotifyTitle: room.spotifyTitle,
             }));
+
+            // Inform opponent that player is connected
+            broadcastToRoom(room, {
+              type: 'OPPONENT_STATUS',
+              userId: clientUser.userId,
+              name: clientUser.displayName,
+              connected: true,
+            });
           }
           break;
         }
 
         case 'CREATE_ROOM': {
           if (!clientUser) return;
-          const roomId = msg.roomId || Math.random().toString(36).substring(2, 8).toUpperCase();
+          const roomId = msg.roomId || 'DM' + Math.floor(1000 + Math.random() * 9000);
           const config = msg.config || {};
           const state = createNewGame(config);
 
@@ -787,7 +1211,7 @@ wss.on('connection', (ws: WebSocket) => {
           };
 
           rooms.set(roomId, room);
-          currentRoomId = roomId;
+          socketRoomMap.set(ws, roomId);
 
           ws.send(
             JSON.stringify({
@@ -810,10 +1234,27 @@ wss.on('connection', (ws: WebSocket) => {
             return;
           }
 
-          currentRoomId = roomId;
+          socketRoomMap.set(ws, roomId);
 
-          if (!room.black) {
+          if (room.white?.userId === clientUser.userId) {
+            room.white.ws = ws;
+            ws.send(
+              JSON.stringify({
+                type: 'ATTACH_ACK',
+                roomId,
+                state: room.state,
+                myColor: 'white',
+                hasOpponent: Boolean(room.black),
+                whiteName: room.white?.displayName,
+                blackName: room.black?.displayName,
+              })
+            );
+          } else if (!room.black || room.black.userId === clientUser.userId) {
+            const wasEmpty = !room.black;
             room.black = { ...clientUser, color: 'black' };
+            room.spectators = room.spectators.filter((s) => s.userId !== clientUser!.userId);
+            if (wasEmpty) room.lastTimerTick = Date.now();
+
             ws.send(
               JSON.stringify({
                 type: 'ROOM_JOINED',
@@ -824,8 +1265,7 @@ wss.on('connection', (ws: WebSocket) => {
               })
             );
 
-            // Inform white player that opponent joined
-            if (room.white?.ws && room.white.ws.readyState === WebSocket.OPEN) {
+            if (wasEmpty && room.white?.ws && room.white.ws.readyState === WebSocket.OPEN) {
               room.white.ws.send(
                 JSON.stringify({
                   type: 'OPPONENT_JOINED',
@@ -835,7 +1275,6 @@ wss.on('connection', (ws: WebSocket) => {
               );
             }
           } else {
-            // Join as spectator
             room.spectators.push(clientUser);
             ws.send(
               JSON.stringify({
@@ -852,62 +1291,9 @@ wss.on('connection', (ws: WebSocket) => {
 
         case 'FIND_MATCH': {
           if (!clientUser) return;
-          // Filter stale matchmaking queue
-          matchmakingQueue = matchmakingQueue.filter(
-            (p) => p.ws && p.ws.readyState === WebSocket.OPEN && p.userId !== clientUser!.userId
-          );
-
-          if (matchmakingQueue.length > 0) {
-            const opponent = matchmakingQueue.shift()!;
-            const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-            const state = createNewGame();
-
-            const isClientWhite = Math.random() > 0.5;
-            const whitePlayer = isClientWhite ? { ...clientUser, color: 'white' as PieceColor } : { ...opponent, color: 'white' as PieceColor };
-            const blackPlayer = isClientWhite ? { ...opponent, color: 'black' as PieceColor } : { ...clientUser, color: 'black' as PieceColor };
-
-            const room: MatchRoom = {
-              id: roomId,
-              createdAt: Date.now(),
-              config: state.config,
-              white: whitePlayer,
-              black: blackPlayer,
-              spectators: [],
-              state,
-              isPrivate: false,
-              whiteTimerMs: 10 * 60 * 1000,
-              blackTimerMs: 10 * 60 * 1000,
-              lastTimerTick: Date.now(),
-            };
-
-            rooms.set(roomId, room);
-
-            if (whitePlayer.ws && whitePlayer.ws.readyState === WebSocket.OPEN) {
-              whitePlayer.ws.send(
-                JSON.stringify({
-                  type: 'MATCH_FOUND',
-                  roomId,
-                  color: 'white',
-                  opponentName: blackPlayer.displayName,
-                  state: room.state,
-                })
-              );
-            }
-
-            if (blackPlayer.ws && blackPlayer.ws.readyState === WebSocket.OPEN) {
-              blackPlayer.ws.send(
-                JSON.stringify({
-                  type: 'MATCH_FOUND',
-                  roomId,
-                  color: 'black',
-                  opponentName: whitePlayer.displayName,
-                  state: room.state,
-                })
-              );
-            }
-          } else {
-            matchmakingQueue.push(clientUser);
-            ws.send(JSON.stringify({ type: 'MATCHMAKING_WAITING' }));
+          const res = handleFindMatch(clientUser.userId, clientUser.displayName, ws, msg.config);
+          if (!res.matched) {
+            ws.send(JSON.stringify({ type: 'MATCHMAKING_WAITING', queueSize: res.queueSize }));
           }
           break;
         }
@@ -915,66 +1301,54 @@ wss.on('connection', (ws: WebSocket) => {
         case 'CANCEL_MATCHMAKING': {
           if (!clientUser) return;
           matchmakingQueue = matchmakingQueue.filter((p) => p.userId !== clientUser!.userId);
+          pendingMatchByUser.delete(clientUser.userId);
           ws.send(JSON.stringify({ type: 'MATCHMAKING_CANCELLED' }));
           break;
         }
 
         case 'PLAY_MOVE': {
-          if (!currentRoomId || !clientUser) return;
-          const room = rooms.get(currentRoomId);
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
           if (!room) return;
 
-          const movingPlayerColor = room.white?.userId === clientUser.userId ? 'white' : room.black?.userId === clientUser.userId ? 'black' : null;
-
-          if (!movingPlayerColor || room.state.turn !== movingPlayerColor) {
-            ws.send(JSON.stringify({ type: 'ERROR', message: 'Not your turn' }));
-            return;
-          }
-
-          const move: Move = msg.move;
-          if (!move) return;
-
-          // SERVER-SIDE VALIDATION: verify move is strictly in legal moves!
-          const legalMoves = getLegalMoves(room.state);
-          const isLegal = legalMoves.some(
-            (m) =>
-              m.from.r === move.from.r &&
-              m.from.c === move.from.c &&
-              m.to.r === move.to.r &&
-              m.to.c === move.to.c &&
-              m.capturedPositions.length === move.capturedPositions.length
-          );
-
-          if (!isLegal) {
-            ws.send(JSON.stringify({ type: 'ERROR', message: 'Illegal move rejected by server engine' }));
-            return;
-          }
-
-          // Apply move using authoritative engine
-          const nextState = applyMove(room.state, move);
-          room.state = nextState;
-
-          broadcastToRoom(room, {
-            type: 'MOVE_APPLIED',
-            move,
-            state: nextState,
-          });
-
-          // Check for game end
-          if (nextState.status !== 'playing') {
-            broadcastToRoom(room, {
-              type: 'GAME_OVER',
-              status: nextState.status,
-              winner: nextState.winner,
-              reason: nextState.statusReason,
-            });
+          const result = processRoomMove(room, clientUser.userId, msg.move, msg.expectedMoveCount);
+          if (!result.ok) {
+            ws.send(JSON.stringify({ type: 'ERROR', message: result.error, state: room.state }));
           }
           break;
         }
 
+        case 'RESIGN': {
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
+          if (!room || room.state.status !== 'playing') return;
+
+          const resigningColor: PieceColor =
+            room.white?.userId === clientUser.userId ? 'white' : 'black';
+          const winner: PieceColor = resigningColor === 'white' ? 'black' : 'white';
+          room.state = {
+            ...room.state,
+            status: winner === 'white' ? 'white_won' : 'black_won',
+            winner,
+            statusReason: `${clientUser.displayName} (${resigningColor.toUpperCase()}) resigned the match.`,
+          };
+
+          broadcastToRoom(room, {
+            type: 'GAME_OVER',
+            status: room.state.status,
+            winner: room.state.winner,
+            reason: room.state.statusReason,
+            state: room.state,
+          });
+          break;
+        }
+
         case 'SEND_CHAT': {
-          if (!currentRoomId || !clientUser) return;
-          const room = rooms.get(currentRoomId);
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
           if (!room) return;
 
           broadcastToRoom(room, {
@@ -988,8 +1362,9 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         case 'SYNC_SPOTIFY': {
-          if (!currentRoomId || !clientUser) return;
-          const room = rooms.get(currentRoomId);
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
           if (!room) return;
           room.spotifyUri = msg.spotifyUri;
           room.spotifyTitle = msg.spotifyTitle;
@@ -1003,8 +1378,9 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         case 'REMATCH_OFFER': {
-          if (!currentRoomId || !clientUser) return;
-          const room = rooms.get(currentRoomId);
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
           if (!room) return;
 
           broadcastToRoom(room, {
@@ -1015,11 +1391,11 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         case 'REMATCH_ACCEPT': {
-          if (!currentRoomId || !clientUser) return;
-          const room = rooms.get(currentRoomId);
+          const roomId = (msg.roomId || socketRoomMap.get(ws) || '').toUpperCase();
+          if (!roomId || !clientUser) return;
+          const room = rooms.get(roomId);
           if (!room) return;
 
-          // Swap sides for rematch
           const oldWhite = room.white;
           const oldBlack = room.black;
           if (oldWhite && oldBlack) {
@@ -1027,10 +1403,15 @@ wss.on('connection', (ws: WebSocket) => {
             room.black = { ...oldWhite, color: 'black' };
           }
           room.state = createNewGame(room.config);
+          room.whiteTimerMs = 10 * 60 * 1000;
+          room.blackTimerMs = 10 * 60 * 1000;
+          room.lastTimerTick = Date.now();
 
           broadcastToRoom(room, {
             type: 'REMATCH_STARTED',
             state: room.state,
+            whiteId: room.white?.userId,
+            blackId: room.black?.userId,
             whiteName: room.white?.displayName,
             blackName: room.black?.displayName,
           });
@@ -1044,14 +1425,24 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     if (clientUser) {
-      matchmakingQueue = matchmakingQueue.filter((p) => p.userId !== clientUser!.userId);
-      if (currentRoomId) {
-        const room = rooms.get(currentRoomId);
+      if (activeSocketsByUserId.get(clientUser.userId) === ws) {
+        activeSocketsByUserId.delete(clientUser.userId);
+      }
+      // Remove WS-only queue entry if socket closed
+      matchmakingQueue = matchmakingQueue.filter(
+        (p) => !(p.userId === clientUser!.userId && p.ws === ws)
+      );
+      const roomId = socketRoomMap.get(ws);
+      if (roomId) {
+        const room = rooms.get(roomId);
         if (room) {
+          if (room.white?.ws === ws) room.white.ws = undefined;
+          if (room.black?.ws === ws) room.black.ws = undefined;
           broadcastToRoom(room, {
-            type: 'PLAYER_DISCONNECTED',
+            type: 'OPPONENT_STATUS',
             userId: clientUser.userId,
             name: clientUser.displayName,
+            connected: false,
           });
         }
       }
@@ -1092,6 +1483,8 @@ export async function updateTelegramMenuButton(url: string) {
   }
 }
 
+let tunnelProcess: ReturnType<typeof spawn> | null = null;
+
 function startCloudflareTunnel() {
   const binaryPath = path.resolve(process.cwd(), 'bin', 'cloudflared');
   if (!fs.existsSync(binaryPath)) {
@@ -1101,6 +1494,7 @@ function startCloudflareTunnel() {
 
   console.log('🚀 Launching persistent Cloudflare Tunnel from ./bin/cloudflared...');
   const tunnel = spawn(binaryPath, ['tunnel', '--protocol', 'http2', '--url', 'http://127.0.0.1:3000', '--no-autoupdate']);
+  tunnelProcess = tunnel;
 
   const handleOutput = (data: Buffer) => {
     const text = data.toString();
@@ -1116,10 +1510,20 @@ function startCloudflareTunnel() {
   tunnel.stderr.on('data', handleOutput);
 
   tunnel.on('close', (code) => {
+    if (tunnelProcess === tunnel) tunnelProcess = null;
     console.log(`Tunnel closed with code ${code}, restarting in 5s...`);
     setTimeout(startCloudflareTunnel, 5000);
   });
 }
+
+process.on('SIGTERM', () => {
+  try { tunnelProcess?.kill(); } catch (_) {}
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  try { tunnelProcess?.kill(); } catch (_) {}
+  process.exit(0);
+});
 
 function buildTelegramKeyboard(url: string = APP_URL) {
   const v = 'v=3_0_live';

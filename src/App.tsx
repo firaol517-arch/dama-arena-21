@@ -33,10 +33,10 @@ import {
 import {
   GameConfig,
   GameState,
-  Move,
   PieceColor,
   PlayerProfile,
   Position,
+  TournamentMatch,
   DEFAULT_CONFIG,
 } from './game/types';
 import { AiDifficulty, getAiMoveAsync } from './game/ai';
@@ -101,7 +101,16 @@ export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [opponentName, setOpponentName] = useState<string>('Opponent');
+  const [opponentId, setOpponentId] = useState<string | null>(null);
   const [waitingForFriend, setWaitingForFriend] = useState(false);
+  const [opponentConnected, setOpponentConnected] = useState(true);
+  const [prefillJoinCode, setPrefillJoinCode] = useState<string | null>(null);
+  const [matchmakingQueueSize, setMatchmakingQueueSize] = useState(1);
+  const [openRoomsCount, setOpenRoomsCount] = useState(0);
+  const [activeTournamentMatch, setActiveTournamentMatch] = useState<{
+    tournamentId: string;
+    match: TournamentMatch;
+  } | null>(null);
 
   // Modals
   const [modeSelectOpen, setModeSelectOpen] = useState(false);
@@ -116,6 +125,44 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [gameOverOpen, setGameOverOpen] = useState(false);
 
+  // Latest state refs (prevents stale closures in WS handlers)
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const roomIdRef = useRef(roomId);
+  roomIdRef.current = roomId;
+  const gameModeRef = useRef(gameMode);
+  gameModeRef.current = gameMode;
+  const playerColorRef = useRef(playerColor);
+  playerColorRef.current = playerColor;
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
+  const waitingForFriendRef = useRef(waitingForFriend);
+  waitingForFriendRef.current = waitingForFriend;
+  const opponentNameRef = useRef(opponentName);
+  opponentNameRef.current = opponentName;
+  const opponentIdRef = useRef(opponentId);
+  opponentIdRef.current = opponentId;
+  const activeTournamentMatchRef = useRef(activeTournamentMatch);
+  activeTournamentMatchRef.current = activeTournamentMatch;
+  const currentSpotifyTrackRef = useRef(currentSpotifyTrack);
+  currentSpotifyTrackRef.current = currentSpotifyTrack;
+  const aiDifficultyRef = useRef(aiDifficulty);
+  aiDifficultyRef.current = aiDifficulty;
+  const recordedMatchKeyRef = useRef<string | null>(null);
+
+  const safeWsSend = useCallback((payload: object) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(payload));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }, []);
+
   // Calculate legal moves for active turn
   const legalMoves = useMemo(() => {
     return getLegalMoves(gameState);
@@ -128,6 +175,135 @@ export default function App() {
     sounds.enabled = next;
   };
 
+  // Handle Game End Record & Rewards (deduplicated per match)
+  const handleGameEnd = useCallback((finalState: GameState) => {
+    setGameOverOpen(true);
+
+    const mode = gameModeRef.current;
+    const pColor = playerColorRef.current;
+    const prof = profileRef.current;
+    const rId = roomIdRef.current;
+    const key = `${rId || mode}:${finalState.moveHistory.length}:${finalState.status}`;
+
+    if (recordedMatchKeyRef.current === key) {
+      return;
+    }
+    recordedMatchKeyRef.current = key;
+
+    const whitePlayerName =
+      mode === 'ai'
+        ? pColor === 'white'
+          ? prof.displayName
+          : 'AI'
+        : mode === 'friend' || mode === 'multiplayer'
+        ? pColor === 'white'
+          ? prof.displayName
+          : opponentNameRef.current
+        : 'White';
+
+    const blackPlayerName =
+      mode === 'ai'
+        ? pColor === 'black'
+          ? prof.displayName
+          : `AI (${aiDifficultyRef.current})`
+        : mode === 'friend' || mode === 'multiplayer'
+        ? pColor === 'black'
+          ? prof.displayName
+          : opponentNameRef.current
+        : 'Black';
+
+    const whitePlayerId =
+      mode === 'local'
+        ? undefined
+        : pColor === 'white'
+        ? prof.id
+        : opponentIdRef.current || undefined;
+    const blackPlayerId =
+      mode === 'local'
+        ? undefined
+        : pColor === 'black'
+        ? prof.id
+        : opponentIdRef.current || undefined;
+
+    fetch('/api/matches/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode,
+        whitePlayer: whitePlayerName,
+        blackPlayer: blackPlayerName,
+        whitePlayerId,
+        blackPlayerId,
+        winner: finalState.winner,
+        reason: finalState.statusReason,
+        totalTurns: finalState.turnCount,
+        difficulty: mode === 'ai' ? aiDifficultyRef.current : undefined,
+        dedupKey: rId ? key : undefined,
+      }),
+    })
+      .then((res) => res.json())
+      .then(() => {
+        fetch(`/api/profile/${prof.id}`)
+          .then((r) => r.json())
+          .then((updated) => {
+            if (updated && updated.id) setProfile(updated);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
+    // Persist tournament bracket result if this match came from a tournament
+    const tourneyCtx = activeTournamentMatchRef.current;
+    if (tourneyCtx) {
+      const playerWon = finalState.winner === pColor;
+      const oppObj =
+        tourneyCtx.match.player1?.id === prof.id
+          ? tourneyCtx.match.player2
+          : tourneyCtx.match.player1;
+      const winnerId = playerWon ? prof.id : oppObj?.id || 'opponent_rival';
+      const winnerName = playerWon ? prof.displayName : oppObj?.name || opponentNameRef.current;
+      const winnerElo = playerWon ? prof.elo : oppObj?.elo || 1500;
+
+      fetch(
+        `/api/tournaments/${tourneyCtx.tournamentId}/matches/${tourneyCtx.match.id}/result`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ winnerId, winnerName, winnerElo }),
+        }
+      )
+        .then(() => {
+          setActiveTournamentMatch(null);
+        })
+        .catch(() => {});
+    }
+  }, []);
+
+  const applyMatchFound = useCallback(
+    (payload: { roomId: string; color: PieceColor; opponentName?: string; state: GameState }) => {
+      recordedMatchKeyRef.current = null;
+      setMatchmakingOpen(false);
+      setFriendRoomOpen(false);
+      setRoomId(payload.roomId);
+      setIsHost(payload.color === 'white');
+      setWaitingForFriend(false);
+      setOpponentConnected(true);
+      setOpponentId(null);
+      setPlayerColor(payload.color);
+      setFlipped(payload.color === 'black');
+      setOpponentName(payload.opponentName || 'Online Champion');
+      setGameState(payload.state);
+      setHistoryStack([]);
+      setSelectedPos(null);
+      setWhiteTimer(600);
+      setBlackTimer(600);
+      setGameOverOpen(false);
+      setGameMode('multiplayer');
+      safeWsSend({ type: 'ATTACH_ROOM', roomId: payload.roomId });
+    },
+    [safeWsSend]
+  );
+
   // Initialize Telegram & User Profile
   useEffect(() => {
     initTelegramUI();
@@ -137,7 +313,6 @@ export default function App() {
     const initData = getTelegramInitData();
     const tgUser = getTelegramUser();
     if (initData || tgUser) {
-      // Authenticate seamlessly with Telegram user name
       fetch('/api/telegram/validate-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -153,7 +328,6 @@ export default function App() {
         })
         .catch((err) => console.warn('Telegram auth fallback:', err));
     } else {
-      // Restore guest or create
       const storedId = localStorage.getItem('dama_user_id');
       const storedName = localStorage.getItem('dama_user_name');
       fetch('/api/auth/guest', {
@@ -175,9 +349,12 @@ export default function App() {
     // Check deep-linking parameter
     const startParam = getTelegramStartParam();
     if (startParam) {
-      if (startParam.startsWith('join_') || (startParam.length === 6 && !['leader', 'multi_'].includes(startParam.slice(0, 6)))) {
+      if (
+        startParam.startsWith('join_') ||
+        (startParam.length === 6 && !['leader', 'multi_', 'tourna'].includes(startParam.slice(0, 6)))
+      ) {
         const cleanCode = startParam.replace('join_', '').toUpperCase();
-        setRoomId(cleanCode);
+        setPrefillJoinCode(cleanCode);
         setFriendRoomOpen(true);
       } else if (startParam === 'ai') {
         setModeSelectOpen(true);
@@ -199,183 +376,375 @@ export default function App() {
     }
   }, []);
 
-  // Connect WebSocket for multiplayer / room synchronization
+  // Single persistent WebSocket with auto-reconnect and keepalive
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    let mounted = true;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let pingInterval: ReturnType<typeof setInterval> | null = null;
+    let activeSocket: WebSocket | null = null;
 
-    const socket = new WebSocket(wsUrl);
-    wsRef.current = socket;
+    const connect = () => {
+      if (!mounted) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+      activeSocket = socket;
+      wsRef.current = socket;
 
-    socket.onopen = () => {
-      setWsConnected(true);
-      socket.send(
-        JSON.stringify({
-          type: 'INIT_CLIENT',
-          userId: profile.id,
-          displayName: profile.displayName,
-        })
-      );
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        switch (msg.type) {
-          case 'ROOM_CREATED':
-            setRoomId(msg.roomId);
-            setIsHost(true);
-            setWaitingForFriend(true);
-            setPlayerColor('white');
-            setFlipped(false);
-            setGameState(msg.state);
-            break;
-
-          case 'ROOM_JOINED':
-            setRoomId(msg.roomId);
-            setIsHost(false);
-            setWaitingForFriend(false);
-            setPlayerColor('black');
-            setFlipped(true);
-            setOpponentName(msg.whiteName || 'Host');
-            setGameState(msg.state);
-            setFriendRoomOpen(false);
-            setGameMode('friend');
-            break;
-
-          case 'OPPONENT_JOINED':
-            setWaitingForFriend(false);
-            setOpponentName(msg.opponentName || 'Challenger');
-            setGameState(msg.state);
-            setFriendRoomOpen(false);
-            setGameMode('friend');
-            break;
-
-          case 'MATCH_FOUND':
-            setMatchmakingOpen(false);
-            setRoomId(msg.roomId);
-            setPlayerColor(msg.color);
-            setFlipped(msg.color === 'black');
-            setOpponentName(msg.opponentName || 'Online Champion');
-            setGameState(msg.state);
-            setGameMode('multiplayer');
-            break;
-
-          case 'MOVE_APPLIED':
-            setGameState(msg.state);
-            if (msg.move?.capturedPositions?.length > 0) {
-              sounds.playCapture();
-            } else {
-              sounds.playMove();
-            }
-            if (msg.move?.isPromotion) {
-              sounds.playPromotion();
-            }
-            break;
-
-          case 'GAME_OVER':
-            setGameState((prev) => ({
-              ...prev,
-              status: msg.status,
-              winner: msg.winner,
-              statusReason: msg.reason,
-            }));
-            setGameOverOpen(true);
-            break;
-
-          case 'REMATCH_STARTED':
-            setGameState(msg.state);
-            setGameOverOpen(false);
-            setPlayerColor((prev) => (prev === 'white' ? 'black' : 'white'));
-            setFlipped((prev) => !prev);
-            break;
-
-          case 'PLAYER_DISCONNECTED':
-            if (gameState.status === 'playing') {
-              setGameState((prev) => ({
-                ...prev,
-                status: playerColor === 'white' ? 'white_won' : 'black_won',
-                winner: playerColor,
-                statusReason: `${msg.name} disconnected. Victory by forfeit!`,
-              }));
-              setGameOverOpen(true);
-            }
-            break;
-
-          case 'SPOTIFY_UPDATED':
-            if (msg.spotifyUri) {
-              setCurrentSpotifyTrack({
-                title: msg.spotifyTitle || 'Shared Music',
-                category: `Shared by ${msg.sharedBy || 'Opponent'}`,
-                embedUrl: msg.spotifyUri,
-                spotifyUrl: msg.spotifyUri,
-                artist: msg.sharedBy || 'Opponent',
-              });
-            }
-            break;
+      socket.onopen = () => {
+        if (!mounted) return;
+        setWsConnected(true);
+        const prof = profileRef.current;
+        try {
+          socket.send(
+            JSON.stringify({
+              type: 'INIT_CLIENT',
+              userId: prof.id,
+              displayName: prof.displayName,
+            })
+          );
+          if (roomIdRef.current) {
+            socket.send(
+              JSON.stringify({
+                type: 'ATTACH_ROOM',
+                roomId: roomIdRef.current,
+              })
+            );
+          }
+        } catch {
+          // ignore
         }
-      } catch (err) {
-        console.error('WebSocket receive error:', err);
-      }
+
+        if (pingInterval) clearInterval(pingInterval);
+        pingInterval = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            try {
+              socket.send(JSON.stringify({ type: 'PING' }));
+            } catch {
+              // ignore
+            }
+          }
+        }, 20000);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'ROOM_CREATED':
+              recordedMatchKeyRef.current = null;
+              setRoomId(msg.roomId);
+              setIsHost(true);
+              setWaitingForFriend(true);
+              setOpponentConnected(false);
+              setPlayerColor('white');
+              setFlipped(false);
+              setGameState(msg.state);
+              setGameMode('friend');
+              break;
+
+            case 'ROOM_JOINED':
+              recordedMatchKeyRef.current = null;
+              setRoomId(msg.roomId);
+              setIsHost(false);
+              setWaitingForFriend(false);
+              setOpponentConnected(true);
+              setPlayerColor('black');
+              setFlipped(true);
+              setOpponentName(msg.whiteName || 'Host');
+              setGameState(msg.state);
+              setFriendRoomOpen(false);
+              setGameMode('friend');
+              break;
+
+            case 'ATTACH_ACK': {
+              if (msg.myColor && msg.myColor !== playerColorRef.current) {
+                setPlayerColor(msg.myColor);
+                setFlipped(msg.myColor === 'black');
+              }
+              if (msg.hasOpponent) {
+                setWaitingForFriend(false);
+                setOpponentConnected(true);
+                setFriendRoomOpen(false);
+                const opp =
+                  (msg.myColor || playerColorRef.current) === 'white'
+                    ? msg.blackName
+                    : msg.whiteName;
+                if (opp) setOpponentName(opp);
+              }
+              if (msg.state) {
+                const cur = gameStateRef.current;
+                if (
+                  msg.state.moveHistory?.length !== cur.moveHistory.length ||
+                  msg.state.turn !== cur.turn ||
+                  msg.state.status !== cur.status
+                ) {
+                  setGameState(msg.state);
+                  setSelectedPos(null);
+                  if (msg.state.status !== 'playing') {
+                    handleGameEnd(msg.state);
+                  }
+                }
+              }
+              if (typeof msg.whiteTimerMs === 'number') {
+                setWhiteTimer(Math.ceil(msg.whiteTimerMs / 1000));
+              }
+              if (typeof msg.blackTimerMs === 'number') {
+                setBlackTimer(Math.ceil(msg.blackTimerMs / 1000));
+              }
+              break;
+            }
+
+            case 'OPPONENT_JOINED':
+              setWaitingForFriend(false);
+              setOpponentConnected(true);
+              setOpponentName(msg.opponentName || 'Challenger');
+              setGameState(msg.state);
+              setFriendRoomOpen(false);
+              setGameMode('friend');
+              break;
+
+            case 'OPPONENT_STATUS':
+              if (msg.userId && msg.userId !== profileRef.current.id) {
+                setOpponentConnected(Boolean(msg.connected));
+              }
+              break;
+
+            case 'MATCH_FOUND':
+              applyMatchFound(msg);
+              break;
+
+            case 'MOVE_APPLIED':
+              setGameState(msg.state);
+              setSelectedPos(null);
+              if (typeof msg.whiteTimerMs === 'number') {
+                setWhiteTimer(Math.ceil(msg.whiteTimerMs / 1000));
+              }
+              if (typeof msg.blackTimerMs === 'number') {
+                setBlackTimer(Math.ceil(msg.blackTimerMs / 1000));
+              }
+              if (msg.move?.capturedPositions?.length > 0) {
+                sounds.playCapture();
+              } else {
+                sounds.playMove();
+              }
+              if (msg.move?.isPromotion) {
+                sounds.playPromotion();
+              }
+              if (msg.state && msg.state.status !== 'playing') {
+                handleGameEnd(msg.state);
+              }
+              break;
+
+            case 'GAME_OVER': {
+              const finalState: GameState = msg.state || {
+                ...gameStateRef.current,
+                status: msg.status,
+                winner: msg.winner,
+                statusReason: msg.reason,
+              };
+              setGameState(finalState);
+              handleGameEnd(finalState);
+              break;
+            }
+
+            case 'REMATCH_STARTED': {
+              recordedMatchKeyRef.current = null;
+              const myId = profileRef.current.id;
+              let nextColor: PieceColor =
+                playerColorRef.current === 'white' ? 'black' : 'white';
+              if (msg.whiteId && msg.whiteId === myId) nextColor = 'white';
+              else if (msg.blackId && msg.blackId === myId) nextColor = 'black';
+
+              setPlayerColor(nextColor);
+              setFlipped(nextColor === 'black');
+              if (nextColor === 'white' && msg.blackName) {
+                setOpponentName(msg.blackName);
+              } else if (nextColor === 'black' && msg.whiteName) {
+                setOpponentName(msg.whiteName);
+              }
+              setGameState(msg.state);
+              setHistoryStack([]);
+              setSelectedPos(null);
+              setWhiteTimer(600);
+              setBlackTimer(600);
+              setGameOverOpen(false);
+              break;
+            }
+
+            case 'SPOTIFY_UPDATED':
+              if (msg.spotifyUri) {
+                setCurrentSpotifyTrack({
+                  title: msg.spotifyTitle || 'Shared Music',
+                  category: `Shared by ${msg.sharedBy || 'Opponent'}`,
+                  embedUrl: msg.spotifyUri,
+                  spotifyUrl: msg.spotifyUri,
+                  artist: msg.sharedBy || 'Opponent',
+                });
+              }
+              break;
+          }
+        } catch (err) {
+          console.error('WebSocket receive error:', err);
+        }
+      };
+
+      socket.onclose = () => {
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+        if (!mounted) return;
+        setWsConnected(false);
+        reconnectTimer = setTimeout(connect, 1500);
+      };
     };
 
-    socket.onclose = () => {
-      setWsConnected(false);
-    };
+    connect();
 
     return () => {
-      socket.close();
+      mounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingInterval) clearInterval(pingInterval);
+      if (activeSocket) {
+        try {
+          activeSocket.close();
+        } catch {
+          // ignore
+        }
+      }
     };
-  }, [profile.id, profile.displayName]);
+  }, [applyMatchFound, handleGameEnd]);
 
-  // Periodic state polling fallback for online rooms (bulletproof fallback on mobile networks)
+  // Re-identify socket whenever profile resolves (without tearing down WebSocket)
+  useEffect(() => {
+    if (safeWsSend({ type: 'INIT_CLIENT', userId: profile.id, displayName: profile.displayName })) {
+      if (roomIdRef.current) {
+        safeWsSend({ type: 'ATTACH_ROOM', roomId: roomIdRef.current });
+      }
+    }
+  }, [profile.id, profile.displayName, safeWsSend]);
+
+  // Periodic room polling fallback (mobile networks / Telegram WebView resilient)
   useEffect(() => {
     if (!roomId || (gameMode !== 'friend' && gameMode !== 'multiplayer')) return;
 
-    const pollInterval = setInterval(() => {
-      fetch(`/api/rooms/${roomId}/state`)
+    const pollRoom = () => {
+      fetch(`/api/rooms/${roomId}/state?userId=${encodeURIComponent(profileRef.current.id)}`)
         .then((res) => res.json())
         .then((data) => {
-          if (data && data.state) {
-            if (data.state.turnCount > gameState.turnCount || data.state.turn !== gameState.turn) {
-              setGameState(data.state);
-            }
-            if (data.hasOpponent && waitingForFriend) {
+          if (!data || !data.state) return;
+
+          if (data.hasOpponent) {
+            if (waitingForFriendRef.current) {
               setWaitingForFriend(false);
-              setOpponentName(data.blackName || data.whiteName || 'Challenger');
+              setOpponentConnected(true);
+              setFriendRoomOpen(false);
             }
-            if (data.spotifyUri && (!currentSpotifyTrack || currentSpotifyTrack.embedUrl !== data.spotifyUri)) {
-              setCurrentSpotifyTrack({
-                title: data.spotifyTitle || 'Room Track',
-                category: 'Shared in Room',
-                embedUrl: data.spotifyUri,
-                spotifyUrl: data.spotifyUri,
-              });
+            const myCol = data.myColor || playerColorRef.current;
+            const oppN = myCol === 'white' ? data.blackName : data.whiteName;
+            const oppI = myCol === 'white' ? data.blackId : data.whiteId;
+            if (oppN) setOpponentName(oppN);
+            if (oppI) setOpponentId(oppI);
+          }
+
+          if (data.myColor && data.myColor !== playerColorRef.current) {
+            setPlayerColor(data.myColor);
+            setFlipped(data.myColor === 'black');
+          }
+
+          const cur = gameStateRef.current;
+          const serverMoves = data.state.moveHistory?.length ?? 0;
+          if (
+            serverMoves !== cur.moveHistory.length ||
+            data.state.turn !== cur.turn ||
+            data.state.status !== cur.status
+          ) {
+            setGameState(data.state);
+            setSelectedPos(null);
+            if (data.state.status !== 'playing') {
+              handleGameEnd(data.state);
+            } else if (serverMoves === 0 && cur.moveHistory.length > 0) {
+              // Rematch detected via polling
+              recordedMatchKeyRef.current = null;
+              setGameOverOpen(false);
+              setHistoryStack([]);
+              setWhiteTimer(600);
+              setBlackTimer(600);
             }
+          }
+
+          if (data.hasOpponent && data.state.status === 'playing') {
+            if (typeof data.whiteTimerMs === 'number') {
+              setWhiteTimer(Math.ceil(data.whiteTimerMs / 1000));
+            }
+            if (typeof data.blackTimerMs === 'number') {
+              setBlackTimer(Math.ceil(data.blackTimerMs / 1000));
+            }
+          }
+
+          if (
+            data.spotifyUri &&
+            (!currentSpotifyTrackRef.current ||
+              currentSpotifyTrackRef.current.embedUrl !== data.spotifyUri)
+          ) {
+            setCurrentSpotifyTrack({
+              title: data.spotifyTitle || 'Room Track',
+              category: 'Shared in Room',
+              embedUrl: data.spotifyUri,
+              spotifyUrl: data.spotifyUri,
+            });
           }
         })
         .catch(() => {});
-    }, 2500);
+    };
 
+    pollRoom();
+    const pollInterval = setInterval(pollRoom, 2000);
     return () => clearInterval(pollInterval);
-  }, [roomId, gameMode, gameState.turnCount, gameState.turn, waitingForFriend, currentSpotifyTrack]);
+  }, [roomId, gameMode, handleGameEnd]);
 
-  // Turn Timer Countdown
+  // Matchmaking polling fallback while searching
+  useEffect(() => {
+    if (!matchmakingOpen) return;
+
+    const pollMatchmaking = () => {
+      fetch(`/api/matchmaking/status?userId=${encodeURIComponent(profileRef.current.id)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.matched && data.roomId && data.state) {
+            applyMatchFound(data);
+          } else {
+            if (typeof data.queueSize === 'number') setMatchmakingQueueSize(data.queueSize);
+            if (typeof data.openRoomsCount === 'number') setOpenRoomsCount(data.openRoomsCount);
+          }
+        })
+        .catch(() => {});
+    };
+
+    pollMatchmaking();
+    const interval = setInterval(pollMatchmaking, 2000);
+    return () => clearInterval(interval);
+  }, [matchmakingOpen, applyMatchFound]);
+
+  // Turn Timer Countdown (paused while waiting for opponent in online rooms)
   useEffect(() => {
     if (gameState.status !== 'playing') return;
+    if ((gameMode === 'friend' || gameMode === 'multiplayer') && waitingForFriend) return;
 
     const interval = setInterval(() => {
       if (gameState.turn === 'white') {
         setWhiteTimer((prev) => {
           if (prev <= 1) {
             clearInterval(interval);
-            setGameState((curr) => ({
-              ...curr,
+            const timeoutState: GameState = {
+              ...gameStateRef.current,
               status: 'black_won',
               winner: 'black',
               statusReason: 'White ran out of time!',
-            }));
-            setGameOverOpen(true);
+            };
+            setGameState(timeoutState);
+            handleGameEnd(timeoutState);
             return 0;
           }
           return prev - 1;
@@ -384,13 +753,14 @@ export default function App() {
         setBlackTimer((prev) => {
           if (prev <= 1) {
             clearInterval(interval);
-            setGameState((curr) => ({
-              ...curr,
+            const timeoutState: GameState = {
+              ...gameStateRef.current,
               status: 'white_won',
               winner: 'white',
               statusReason: 'Black ran out of time!',
-            }));
-            setGameOverOpen(true);
+            };
+            setGameState(timeoutState);
+            handleGameEnd(timeoutState);
             return 0;
           }
           return prev - 1;
@@ -399,7 +769,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [gameState.status, gameState.turn]);
+  }, [gameState.status, gameState.turn, gameMode, waitingForFriend, handleGameEnd]);
 
   // AI Turn Handling
   useEffect(() => {
@@ -418,7 +788,6 @@ export default function App() {
         setIsAiThinking(false);
 
         if (!res || !res.move) {
-          // AI has no moves, player wins by stalemate
           const humanColor = playerColor;
           const wonState: GameState = {
             ...gameState,
@@ -459,48 +828,17 @@ export default function App() {
       active = false;
       setIsAiThinking(false);
     };
-  }, [gameState, gameMode, playerColor, aiDifficulty]);
-
-  // Handle Game End Record & Rewards
-  const handleGameEnd = (finalState: GameState) => {
-    setGameOverOpen(true);
-
-    const whitePlayerName = gameMode === 'ai' ? (playerColor === 'white' ? profile.displayName : 'AI') : 'White';
-    const blackPlayerName = gameMode === 'ai' ? (playerColor === 'black' ? profile.displayName : `AI (${aiDifficulty})`) : 'Black';
-
-    fetch('/api/matches/record', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: gameMode,
-        whitePlayer: whitePlayerName,
-        blackPlayer: blackPlayerName,
-        winner: finalState.winner,
-        reason: finalState.statusReason,
-        totalTurns: finalState.turnCount,
-        difficulty: gameMode === 'ai' ? aiDifficulty : undefined,
-      }),
-    })
-      .then((res) => res.json())
-      .then(() => {
-        // Refresh local player profile
-        fetch(`/api/profile/${profile.id}`)
-          .then((r) => r.json())
-          .then((updated) => {
-            if (updated && updated.id) setProfile(updated);
-          })
-          .catch(() => {});
-      })
-      .catch(() => {});
-  };
+  }, [gameState, gameMode, playerColor, aiDifficulty, handleGameEnd]);
 
   // Human player executes a move or step
   const handleHumanStep = (from: Position, to: Position) => {
     if (gameState.status !== 'playing') return;
 
-    // Check if it's the human's turn in online/AI modes
     if (gameMode === 'ai' && gameState.turn !== playerColor) return;
-    if ((gameMode === 'friend' || gameMode === 'multiplayer') && gameState.turn !== playerColor) return;
+    if (gameMode === 'friend' || gameMode === 'multiplayer') {
+      if (waitingForFriend) return;
+      if (gameState.turn !== playerColor) return;
+    }
 
     try {
       const { nextState, turnContinues } = executeInteractiveStep(gameState, from, to);
@@ -508,8 +846,9 @@ export default function App() {
       setHistoryStack((prev) => [...prev, gameState]);
       setGameState(nextState);
 
-      // Play sound
-      const didCapture = Boolean(nextState.activeCapturePiece || nextState.pendingCapturedPositions.length > 0);
+      const didCapture = Boolean(
+        nextState.activeCapturePiece || nextState.pendingCapturedPositions.length > 0
+      );
       if (didCapture) {
         sounds.playCapture();
         triggerHaptic('medium');
@@ -519,28 +858,48 @@ export default function App() {
       }
 
       if (turnContinues) {
-        // Multi-capture continuation: keep the active piece selected
         setSelectedPos(to);
       } else {
         setSelectedPos(null);
 
-        // If online multiplayer, synchronize authoritative move with server
+        // If online multiplayer, synchronize authoritative move once via REST (which broadcasts via WS)
         if (gameMode === 'friend' || gameMode === 'multiplayer') {
           const executedMove = nextState.moveHistory[nextState.moveHistory.length - 1];
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'PLAY_MOVE',
-                move: executedMove,
-              })
-            );
-          }
+          const expectedMoveCount = Math.max(0, nextState.moveHistory.length - 1);
+
           if (roomId) {
             fetch(`/api/rooms/${roomId}/move`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ move: executedMove }),
-            }).catch(() => {});
+              body: JSON.stringify({
+                userId: profile.id,
+                move: executedMove,
+                expectedMoveCount,
+              }),
+            })
+              .then((res) => res.json())
+              .then((data) => {
+                if (data?.state) {
+                  setGameState(data.state);
+                  if (data.state.status !== 'playing') {
+                    handleGameEnd(data.state);
+                  }
+                }
+              })
+              .catch(() => {
+                safeWsSend({
+                  type: 'PLAY_MOVE',
+                  roomId,
+                  move: executedMove,
+                  expectedMoveCount,
+                });
+              });
+          } else {
+            safeWsSend({
+              type: 'PLAY_MOVE',
+              move: executedMove,
+              expectedMoveCount,
+            });
           }
         }
 
@@ -555,6 +914,42 @@ export default function App() {
     }
   };
 
+  // Start matchmaking (REST + WS unified)
+  const handleStartMatchmaking = () => {
+    setMatchmakingOpen(true);
+    setMatchmakingQueueSize(1);
+    fetch('/api/matchmaking/find', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: profile.id,
+        displayName: profile.displayName,
+        config: gameConfig,
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.matched && data.roomId && data.state) {
+          applyMatchFound(data);
+        } else if (typeof data.queueSize === 'number') {
+          setMatchmakingQueueSize(data.queueSize);
+        }
+      })
+      .catch(() => {
+        safeWsSend({ type: 'FIND_MATCH', config: gameConfig });
+      });
+  };
+
+  const handleCancelMatchmaking = () => {
+    setMatchmakingOpen(false);
+    fetch('/api/matchmaking/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: profile.id }),
+    }).catch(() => {});
+    safeWsSend({ type: 'CANCEL_MATCHMAKING' });
+  };
+
   // Start new match
   const startNewMatch = (
     mode: GameMode,
@@ -562,8 +957,18 @@ export default function App() {
     color: PieceColor = 'white',
     difficulty: AiDifficulty = 'medium'
   ) => {
+    recordedMatchKeyRef.current = null;
     const mergedConfig = { ...gameConfig, ...newConfig };
     const newGame = createNewGame(mergedConfig);
+
+    if (mode === 'ai' || mode === 'local') {
+      setRoomId(null);
+      setIsHost(false);
+      setWaitingForFriend(false);
+      setOpponentConnected(true);
+      setOpponentId(null);
+      setActiveTournamentMatch(null);
+    }
 
     setGameMode(mode);
     setPlayerColor(color);
@@ -581,7 +986,6 @@ export default function App() {
   const handleUndo = () => {
     if (historyStack.length === 0) return;
     if (gameMode === 'ai') {
-      // In AI mode, undo twice to step back to before human move
       if (historyStack.length >= 2) {
         const target = historyStack[historyStack.length - 2];
         setGameState(target);
@@ -602,7 +1006,27 @@ export default function App() {
   // Resign match
   const handleResign = () => {
     if (gameState.status !== 'playing') return;
-    const resigning = gameState.turn;
+
+    if ((gameMode === 'friend' || gameMode === 'multiplayer') && roomId) {
+      fetch(`/api/rooms/${roomId}/resign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: profile.id }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.state) {
+            setGameState(data.state);
+            handleGameEnd(data.state);
+          }
+        })
+        .catch(() => {
+          safeWsSend({ type: 'RESIGN', roomId });
+        });
+      return;
+    }
+
+    const resigning: PieceColor = gameMode === 'local' ? gameState.turn : playerColor;
     const winner: PieceColor = resigning === 'white' ? 'black' : 'white';
     const resignedState: GameState = {
       ...gameState,
@@ -673,6 +1097,9 @@ export default function App() {
           isAiThinking={isAiThinking}
           whiteTimer={whiteTimer}
           blackTimer={blackTimer}
+          roomId={roomId}
+          waitingForOpponent={waitingForFriend}
+          opponentConnected={opponentConnected}
           onUndo={handleUndo}
           canUndo={(gameMode === 'ai' || gameMode === 'local') && historyStack.length > 0}
           onRestart={() => startNewMatch(gameMode, gameConfig, playerColor, aiDifficulty)}
@@ -690,10 +1117,15 @@ export default function App() {
           onExecuteMove={(from, to) => handleHumanStep(from, to)}
           flipped={flipped}
           notationType={notationType}
-          disabled={isAiThinking || gameState.status !== 'playing'}
+          disabled={
+            isAiThinking ||
+            gameState.status !== 'playing' ||
+            ((gameMode === 'friend' || gameMode === 'multiplayer') &&
+              (waitingForFriend || gameState.turn !== playerColor))
+          }
         />
 
-        {/* On-Board / In-Game Spotify Player (Always active right on the game screen) */}
+        {/* On-Board / In-Game Spotify Player */}
         <InGameSpotifyDock
           currentTrack={currentSpotifyTrack || SPOTIFY_PRESETS[0]}
           onSelectTrack={(track) => {
@@ -708,13 +1140,12 @@ export default function App() {
                   sharedBy: profile.displayName,
                 }),
               }).catch(() => {});
-              wsRef.current?.send(
-                JSON.stringify({
-                  type: 'SYNC_SPOTIFY',
-                  spotifyUri: track.embedUrl,
-                  spotifyTitle: track.title,
-                })
-              );
+              safeWsSend({
+                type: 'SYNC_SPOTIFY',
+                roomId,
+                spotifyUri: track.embedUrl,
+                spotifyTitle: track.title,
+              });
             }
           }}
           roomId={roomId}
@@ -751,40 +1182,66 @@ export default function App() {
         }}
         onSelectAi={(diff, color) => startNewMatch('ai', gameConfig, color, diff)}
         onOpenFriendRoom={() => setFriendRoomOpen(true)}
-        onStartMatchmaking={() => {
-          setMatchmakingOpen(true);
-          wsRef.current?.send(JSON.stringify({ type: 'FIND_MATCH' }));
-        }}
+        onStartMatchmaking={handleStartMatchmaking}
         onStartLocal={() => startNewMatch('local', gameConfig, 'white')}
       />
 
       <FriendRoomModal
         isOpen={friendRoomOpen}
-        onClose={() => setFriendRoomOpen(false)}
+        onClose={() => {
+          setFriendRoomOpen(false);
+          setPrefillJoinCode(null);
+        }}
         currentUser={profile}
+        gameConfig={gameConfig}
         currentRoomId={roomId}
         waitingForOpponent={waitingForFriend}
+        prefillCode={prefillJoinCode}
         onRoomCreated={(id, state, color) => {
+          recordedMatchKeyRef.current = null;
           setRoomId(id);
           setIsHost(true);
           setWaitingForFriend(true);
+          setOpponentConnected(false);
+          setOpponentName('Waiting...');
+          setOpponentId(null);
           setPlayerColor(color);
           setFlipped(false);
           setGameState(state);
+          setHistoryStack([]);
+          setSelectedPos(null);
+          setWhiteTimer(600);
+          setBlackTimer(600);
+          setGameOverOpen(false);
           setGameMode('friend');
-          wsRef.current?.send(JSON.stringify({ type: 'ATTACH_ROOM', roomId: id }));
+          safeWsSend({ type: 'ATTACH_ROOM', roomId: id });
         }}
         onRoomJoined={(id, state, color, oppName) => {
+          recordedMatchKeyRef.current = null;
           setRoomId(id);
-          setIsHost(false);
+          setIsHost(color === 'white');
           setWaitingForFriend(false);
+          setOpponentConnected(true);
           setPlayerColor(color);
           setFlipped(color === 'black');
           setOpponentName(oppName);
           setGameState(state);
+          setHistoryStack([]);
+          setSelectedPos(null);
+          setWhiteTimer(600);
+          setBlackTimer(600);
+          setGameOverOpen(false);
           setFriendRoomOpen(false);
+          setPrefillJoinCode(null);
           setGameMode('friend');
-          wsRef.current?.send(JSON.stringify({ type: 'ATTACH_ROOM', roomId: id }));
+          safeWsSend({ type: 'ATTACH_ROOM', roomId: id });
+        }}
+        onLeaveRoom={() => {
+          setRoomId(null);
+          setIsHost(false);
+          setWaitingForFriend(false);
+          setOpponentConnected(true);
+          setOpponentId(null);
         }}
       />
 
@@ -793,7 +1250,11 @@ export default function App() {
         onClose={() => setTournamentOpen(false)}
         currentUser={profile}
         onEnterTournamentMatch={(tId, match) => {
+          recordedMatchKeyRef.current = null;
           setTournamentOpen(false);
+          setRoomId(null);
+          setWaitingForFriend(false);
+          setActiveTournamentMatch({ tournamentId: tId, match });
           const isPlayer1 = match.player1?.id === profile.id;
           const oppName = isPlayer1
             ? match.player2?.name || 'Grandmaster Rival'
@@ -804,8 +1265,11 @@ export default function App() {
           setGameMode('ai');
           setAiDifficulty('hard');
           setGameState(createNewGame(gameConfig));
+          setHistoryStack([]);
+          setSelectedPos(null);
           setWhiteTimer(300);
           setBlackTimer(300);
+          setGameOverOpen(false);
         }}
       />
 
@@ -827,22 +1291,24 @@ export default function App() {
               }),
             }).catch(() => {});
 
-            wsRef.current?.send(
-              JSON.stringify({
-                type: 'SYNC_SPOTIFY',
-                spotifyUri: track.embedUrl,
-                spotifyTitle: track.title,
-              })
-            );
+            safeWsSend({
+              type: 'SYNC_SPOTIFY',
+              roomId,
+              spotifyUri: track.embedUrl,
+              spotifyTitle: track.title,
+            });
           }
         }}
       />
 
       <MatchmakingModal
         isOpen={matchmakingOpen}
-        onCancel={() => {
-          wsRef.current?.send(JSON.stringify({ type: 'CANCEL_MATCHMAKING' }));
-          setMatchmakingOpen(false);
+        queueSize={matchmakingQueueSize}
+        openRoomsCount={openRoomsCount}
+        onCancel={handleCancelMatchmaking}
+        onSwitchToRooms={() => {
+          handleCancelMatchmaking();
+          setFriendRoomOpen(true);
         }}
       />
 
@@ -889,8 +1355,32 @@ export default function App() {
         totalTurns={gameState.turnCount}
         playerColor={playerColor}
         onRematch={() => {
-          if (gameMode === 'friend' && wsRef.current) {
-            wsRef.current.send(JSON.stringify({ type: 'REMATCH_ACCEPT' }));
+          if ((gameMode === 'friend' || gameMode === 'multiplayer') && roomId) {
+            fetch(`/api/rooms/${roomId}/rematch`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId: profile.id }),
+            })
+              .then((res) => res.json())
+              .then((data) => {
+                if (data?.success && data.state) {
+                  recordedMatchKeyRef.current = null;
+                  setGameState(data.state);
+                  setHistoryStack([]);
+                  setSelectedPos(null);
+                  setWhiteTimer(600);
+                  setBlackTimer(600);
+                  setGameOverOpen(false);
+                  if (data.color) {
+                    setPlayerColor(data.color);
+                    setFlipped(data.color === 'black');
+                  }
+                  if (data.opponentName) setOpponentName(data.opponentName);
+                }
+              })
+              .catch(() => {
+                safeWsSend({ type: 'REMATCH_ACCEPT', roomId });
+              });
           } else {
             startNewMatch(gameMode, gameConfig, playerColor, aiDifficulty);
           }

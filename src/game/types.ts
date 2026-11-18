@@ -79,7 +79,10 @@ export interface GameState {
   halfMovesWithoutCapture: number;
   positionHistory: string[];
   activeCapturePiece?: Position;
+  activeCaptureStart?: Position;
   pendingCapturedPositions: Position[];
+  pendingCaptureSteps?: MoveStep[];
+  pendingPromotionDuringJump?: boolean;
 }
 
 export interface PlayerProfile {

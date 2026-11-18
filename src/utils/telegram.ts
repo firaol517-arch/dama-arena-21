@@ -77,3 +77,13 @@ export function openTelegramExternalLink(url: string) {
   // Safe browser fallback: never set window.location.href to custom schemes!
   window.open(url, '_blank', 'noopener,noreferrer');
 }
+
+export function openTelegramShareLink(url: string) {
+  if (typeof window === 'undefined') return;
+  const tg = getTelegramWebApp();
+  if (tg && typeof tg.openTelegramLink === 'function') {
+    tg.openTelegramLink(url);
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}

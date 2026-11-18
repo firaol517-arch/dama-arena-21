@@ -9,6 +9,7 @@ import {
   createNewGame,
   applyMove,
   getLegalMoves,
+  executeInteractiveStep,
   createInitialBoard,
   isDarkSquare,
   generateCapturesForPiece,
@@ -310,4 +311,53 @@ test('10. Win conditions & configurable stalemate rule', () => {
   };
   const resultDraw = applyMove(stateDraw, sealMove);
   assert.equal(resultDraw.status, 'draw', 'Stalemate is a draw with stalemateRule=draw');
+});
+
+test('11. Interactive multi-step capture records canonical moveHistory matching server applyMove', () => {
+  const emptyBoard = createEmptyBoard();
+  emptyBoard[6][5] = { id: 'w1', color: 'white', type: 'man' };
+  emptyBoard[5][4] = { id: 'b1', color: 'black', type: 'man' };
+  emptyBoard[3][2] = { id: 'b2', color: 'black', type: 'man' };
+
+  const initialState: GameState = {
+    ...createNewGame(),
+    board: emptyBoard,
+    turn: 'white',
+  };
+
+  // Step 1: (6,5) -> (4,3)
+  const step1 = executeInteractiveStep(initialState, { r: 6, c: 5 }, { r: 4, c: 3 });
+  assert.equal(step1.turnContinues, true, 'Turn continues for second jump');
+  assert.deepEqual(step1.nextState.activeCapturePiece, { r: 4, c: 3 });
+
+  // Step 2: (4,3) -> (2,1)
+  const step2 = executeInteractiveStep(step1.nextState, { r: 4, c: 3 }, { r: 2, c: 1 });
+  assert.equal(step2.turnContinues, false, 'Turn completes after second jump');
+  assert.equal(step2.nextState.turn, 'black');
+  assert.equal(step2.nextState.moveHistory.length, 1);
+
+  const recordedMove = step2.nextState.moveHistory[0];
+  assert.deepEqual(recordedMove.from, { r: 6, c: 5 }, 'Recorded move starts at original turn square');
+  assert.deepEqual(recordedMove.to, { r: 2, c: 1 }, 'Recorded move ends at final square');
+  assert.equal(recordedMove.steps.length, 2, 'Recorded move contains both jump steps');
+  assert.equal(recordedMove.capturedPositions.length, 2, 'Recorded move contains both captured pieces');
+
+  // Verify recordedMove is accepted by server's getLegalMoves + applyMove
+  const serverLegal = getLegalMoves(initialState);
+  const canonicalMatch = serverLegal.find(
+    (m) =>
+      m.from.r === recordedMove.from.r &&
+      m.from.c === recordedMove.from.c &&
+      m.to.r === recordedMove.to.r &&
+      m.to.c === recordedMove.to.c &&
+      m.capturedPositions.length === recordedMove.capturedPositions.length &&
+      m.capturedPositions.every((cp) =>
+        recordedMove.capturedPositions.some((mp) => mp.r === cp.r && mp.c === cp.c)
+      )
+  );
+  assert.ok(canonicalMatch, 'Server getLegalMoves matches recordedMove from executeInteractiveStep');
+
+  const serverApplied = applyMove(initialState, canonicalMatch);
+  assert.deepEqual(serverApplied.board, step2.nextState.board, 'Server board matches client board');
+  assert.equal(serverApplied.turn, step2.nextState.turn, 'Server turn matches client turn');
 });

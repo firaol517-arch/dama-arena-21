@@ -508,6 +508,10 @@ export function applyMove(state: GameState, move: Move): GameState {
     halfMovesWithoutCapture,
     positionHistory: newPosHistory,
     pendingCapturedPositions: [],
+    activeCapturePiece: undefined,
+    activeCaptureStart: undefined,
+    pendingCaptureSteps: undefined,
+    pendingPromotionDuringJump: undefined,
   };
 
   const opponentMoves = getLegalMoves(intermediateState);
@@ -605,7 +609,11 @@ export function executeInteractiveStep(
 
   let currentType = piece.type;
   const reachedPromotion = isPromotionRow(to, piece.color, state.config.boardSize);
-  if (reachedPromotion && (state.config.immediatePromotionInMultiJump || matchingMoves[0].steps.length === 1)) {
+  const promotedOnThisStep =
+    piece.type === 'man' &&
+    reachedPromotion &&
+    (state.config.immediatePromotionInMultiJump || matchingMoves[0].steps.length === 1);
+  if (promotedOnThisStep) {
     currentType = 'king';
   }
 
@@ -626,34 +634,58 @@ export function executeInteractiveStep(
     );
   }
 
+  const originalFrom = state.activeCaptureStart || from;
+  const allSteps = [...(state.pendingCaptureSteps || []), selectedFirstStep];
+
   if (furtherCaptures.length > 0) {
     return {
       nextState: {
         ...state,
         board: newBoard,
         activeCapturePiece: to,
+        activeCaptureStart: originalFrom,
         pendingCapturedPositions: capturedPositions,
+        pendingCaptureSteps: allSteps,
+        pendingPromotionDuringJump: Boolean(state.pendingPromotionDuringJump || promotedOnThisStep),
       },
       turnContinues: true,
     };
   } else {
-    const completedMove: Move = {
+    const promotedDuringEarlierJump = Boolean(state.pendingPromotionDuringJump);
+    const wasPromotedThisTurn = promotedDuringEarlierJump || promotedOnThisStep || (reachedPromotion && piece.type === 'man');
+
+    const stepMoveForLocalApply: Move = {
       from: state.activeCapturePiece || from,
       to,
       steps: [selectedFirstStep],
+      capturedPositions: selectedFirstStep.captured ? [selectedFirstStep.captured] : [],
+      isPromotion: promotedOnThisStep,
+      promotedDuringJump: promotedDuringEarlierJump,
+    };
+
+    const canonicalMove: Move = {
+      from: originalFrom,
+      to,
+      steps: allSteps,
       capturedPositions,
-      isPromotion: currentType === 'king' && piece.type === 'man',
-      promotedDuringJump: false,
+      isPromotion: wasPromotedThisTurn,
+      promotedDuringJump: promotedDuringEarlierJump,
     };
 
     const tempState: GameState = {
       ...state,
       activeCapturePiece: undefined,
+      activeCaptureStart: undefined,
       pendingCapturedPositions: [],
+      pendingCaptureSteps: undefined,
+      pendingPromotionDuringJump: undefined,
     };
 
+    const applied = applyMove(tempState, stepMoveForLocalApply);
+    applied.moveHistory = [...state.moveHistory, canonicalMove];
+
     return {
-      nextState: applyMove(tempState, completedMove),
+      nextState: applied,
       turnContinues: false,
     };
   }
